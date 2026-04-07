@@ -1,0 +1,25 @@
+{
+  "name": "gwent-classic",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "predev": "npm run legacy:build",
+    "dev": "vite",
+    "legacy:build": "rm -rf public/legacy && tsc -p tsconfig.legacy.json --pretty false; test -d public/legacy",
+    "prebuild": "npm run legacy:build",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.2",
+    "@types/react-dom": "^19.2.2",
+    "@vitejs/plugin-react-swc": "^4.1.0",
+    "typescript": "^5.9.3",
+    "vite": "^7.1.10"
+  }
+}

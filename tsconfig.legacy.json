@@ -1,0 +1,14 @@
+{
+  "compilerOptions": {
+    "target": "ES2017",
+    "lib": ["DOM", "ES2017"],
+    "module": "none",
+    "outDir": "public/legacy",
+    "rootDir": "src",
+    "strict": false,
+    "skipLibCheck": true,
+    "noEmitOnError": false,
+    "removeComments": true
+  },
+  "include": ["src/abilities.ts", "src/cards.ts", "src/decks.ts", "src/factions.ts", "src/gwent.ts"]
+}

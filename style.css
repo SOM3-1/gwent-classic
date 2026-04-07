@@ -1222,7 +1222,7 @@ main { background-image: url('img/boardtest8.png'); }
 	
 	transition: margin-bottom 0.05s, margin-left .25s, margin-right .25s, transform 0.5s;
 	
-	z-index = 1;
+	z-index: 1;
 }
 
 .deck-card .card { position : absolute; }
@@ -1324,4 +1324,48 @@ main { background-image: url('img/boardtest8.png'); }
 
 .noclick {
 	pointer-events: none;
+}
+
+#mobile-landscape-lock {
+	display: none;
+	position: fixed;
+	inset: 0;
+	z-index: 1000;
+	background: radial-gradient(circle at top, #4c3a16 0%, #17110a 45%, #050505 100%);
+	color: goldenrod;
+	font-family: Arial Narrow, sans-serif;
+}
+
+#mobile-landscape-lock > div {
+	position: absolute;
+	top: 50%;
+	left: 50%;
+	width: min(78vw, 28rem);
+	transform: translate(-50%, -50%);
+	text-align: center;
+}
+
+#mobile-landscape-lock h1 {
+	margin: 0 0 1rem;
+	font-size: 9vw;
+	letter-spacing: 0.08em;
+}
+
+#mobile-landscape-lock p {
+	margin: 0;
+	font-size: 4.5vw;
+	line-height: 1.4;
+}
+
+@media (hover: none) and (pointer: coarse) and (orientation: portrait) {
+	#mobile-landscape-lock {
+		display: block;
+	}
+
+	#dimensions,
+	main,
+	#deck-customization,
+	#toggle-music {
+		display: none;
+	}
 }
