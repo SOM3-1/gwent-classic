@@ -10,5 +10,5 @@
     "noEmitOnError": false,
     "removeComments": true
   },
-  "include": ["src/abilities.ts", "src/cards.ts", "src/decks.ts", "src/factions.ts", "src/gwent.ts"]
+  "include": ["src/abilities.ts", "src/cards.ts", "src/decks.ts", "src/factions.ts", "src/gwent.ts", "src/global.d.ts"]
 }

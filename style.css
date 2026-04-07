@@ -811,6 +811,43 @@ main { background-image: url('img/boardtest8.png'); }
 	background-color: rgba(20,20,20,.9);
 }
 
+#forfeit-button {
+	top: 82%;
+	left: 41%;
+	width: 18%;
+	height: 4%;
+	font-size: 1.55vw;
+	font-weight: bold;
+	color: #dcb7a4;
+	border: .1vw solid rgba(185, 115, 92, 0.9);
+	border-radius: .5vw;
+	background-color: rgba(35,20,20,.92);
+}
+
+#turn-timer {
+	top: 75.8%;
+	left: 63%;
+	width: 20%;
+	height: 3.2%;
+	font-size: 1.3vw;
+	font-weight: bold;
+	color: #ead7ac;
+	border: .08vw solid rgba(218, 183, 104, 0.65);
+	border-radius: .45vw;
+	background-color: rgba(20,20,20,.75);
+	text-shadow: 0 0 .35vw black;
+}
+
+#turn-timer.timer-warning {
+	color: #efc18f;
+	border-color: rgba(226, 143, 74, 0.8);
+}
+
+#turn-timer.timer-danger {
+	color: #f3a098;
+	border-color: rgba(195, 89, 89, 0.9);
+}
+
 /* ------------- middle pannel ------------------ */
 
 .field {
@@ -1060,11 +1097,85 @@ main { background-image: url('img/boardtest8.png'); }
 }
 
 #upload-deck {
-	left: 40%;
+	display: none;
 }
 
 #change-faction {
-	left: 47%;
+	left: 43%;
+}
+
+#download-deck {
+	left: 54%;
+}
+
+#play-modes {
+	position: absolute;
+	top: 90.2%;
+	left: 39.5%;
+	width: 21%;
+	display: flex;
+	justify-content: center;
+	gap: 0.8vw;
+}
+
+#pvp-status h2 {
+	margin: 0 0 0.4vw;
+	font-size: 1.05vw;
+	font-weight: normal;
+	color: #d8c39a;
+	text-align: center;
+}
+
+#pvp-status p,
+#play-mode-note {
+	margin: 0;
+	font-size: 0.85vw;
+	line-height: 1.35;
+	text-align: center;
+}
+
+#player-display-name {
+	color: white;
+	margin-bottom: 0.2vw;
+}
+
+#multiplayer-endpoint-status,
+#pvp-status-line {
+	color: #ad9a7a;
+}
+
+.service-online {
+	color: #bfd39b !important;
+}
+
+.service-offline {
+	color: #d0a98f !important;
+}
+
+#play-modes button,
+#pvp-status button {
+	width: 10vw;
+	padding: 0.45vw 0.55vw;
+	font-size: 0.92vw;
+	color: white;
+	background-color: rgb(20,20,20);
+	border: 0.1vw ridge rgb(30,30,30);
+}
+
+#pvp-status {
+	position: absolute;
+	top: 79.8%;
+	left: 39.5%;
+	width: 21%;
+	padding: 0.85vw 1vw;
+	background: rgba(19, 16, 12, 0.9);
+	border: 0.1vw solid rgba(154, 128, 78, 0.45);
+	border-radius: 0.6vw;
+}
+
+#pvp-status button {
+	width: 100%;
+	margin-top: 0.55vw;
 }
 
 .card-array {
@@ -1168,19 +1279,6 @@ main { background-image: url('img/boardtest8.png'); }
 #deck-stats > p:nth-child(6) { background-image: url('img/icons/deck_stats_special.png'); }
 #deck-stats > p:nth-child(8) { background-image: url('img/icons/deck_stats_strength.png'); }
 #deck-stats > p:nth-child(10) { background-image: url('img/icons/deck_stats_hero.png'); }
-
-#start-game {
-	position: absolute;
-	top: 86%;
-	left: 46.65%;
-	width: 6%;
-	height: 3%;
-	font-size: 0.98vw;
-	white-space: nowrap;
-	color: white;
-	background-color: rgb(20,20,20);
-	border: 0.1vw ridge rgb(30,30,30);
-}
 
 .card-contianer-title {
 	position: absolute;

@@ -47,6 +47,10 @@ export const appMarkup = `
         <div></div>
       </div>
     </div>
+    <div id="turn-timer" class="center">
+      <span>45s</span>
+    </div>
+    <div id="forfeit-button" class="center hide">Forfeit</div>
     <div id="pass-button" class="center">Pass</div>
   </section>
   <section id="panel-mid" class="panel">
@@ -185,6 +189,10 @@ export const appMarkup = `
   <a id="change-faction" class="deck-options">Change Faction</a>
   <a id="download-deck" class="deck-options">Download Deck</a>
   <a id="download-json" style="display:none;"></a>
+  <section id="play-modes">
+    <button id="play-vs-computer">Play vs Computer</button>
+    <button id="play-vs-player">Play vs Player</button>
+  </section>
   <h2 id="card-bank-title" class="card-contianer-title">Card Collection</h2>
   <h2 id="card-deck-title" class="card-contianer-title">Cards in Deck</h2>
   <div id="card-bank" class="card-array"></div>
@@ -205,7 +213,13 @@ export const appMarkup = `
     <p>Hero Cards</p>
     <p>0</p>
   </div>
-  <button id="start-game">Start game</button>
+  <section id="pvp-status" class="hide">
+    <h2>Queue Status</h2>
+    <p id="player-display-name">Generating...</p>
+    <p id="multiplayer-endpoint-status">Multiplayer service not configured</p>
+    <p id="pvp-status-line">Not in queue</p>
+    <button id="cancel-pvp-queue">Cancel Queue</button>
+  </section>
 </section>
 <div id="toggle-music" class="center music-customization">♫</div>
 `;

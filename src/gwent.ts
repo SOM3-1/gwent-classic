@@ -1256,6 +1256,12 @@ class Board {
 
 class Game {
 	constructor() {
+		this.turnDurationSeconds = 45;
+		this.turnTimer = null;
+		this.turnTimerDeadline = 0;
+		this.turnTimerElem = document.getElementById("turn-timer");
+		this.turnTimerTextElem = this.turnTimerElem ? this.turnTimerElem.getElementsByTagName("span")[0] : null;
+		this.forfeitButtonElem = document.getElementById("forfeit-button");
 		this.endScreen = document.getElementById("end-screen");
 		let buttons = this.endScreen.getElementsByTagName("button");
 		this.customize_elem = buttons[0];
@@ -1266,6 +1272,9 @@ class Game {
 	}
 	
 	reset() {
+		this.setMode("pvc");
+		this.clearTurnTimer();
+		this.renderTurnTimer(this.turnDurationSeconds);
 		this.firstPlayer;
 		this.currPlayer = null;
 		
@@ -1375,12 +1384,17 @@ class Game {
 			this.currPlayer = this.currPlayer.opponent();
 			await ui.notification(this.currPlayer.tag + "-turn", 1200);
 		}
+		if (this.mode === "pvp")
+			this.startTurnTimer();
+		else
+			this.renderTurnTimer(this.turnDurationSeconds);
 		ui.enablePlayer(this.currPlayer === player_me);
 		this.currPlayer.startTurn();
 	}
 	
 	// Ends the current turn and may end round. Disables client interraction in client's turn.
 	async endTurn() {
+		this.clearTurnTimer();
 		if (this.currPlayer === player_me)
 			ui.enablePlayer(false);
 		await this.runEffects(this.turnEnd);
@@ -1394,6 +1408,7 @@ class Game {
 	
 	// Ends the round and may end the game. Determines final scores and the round winner.
 	async endRound() {
+		this.clearTurnTimer();
 		let dif = player_me.total - player_op.total;
 		if (dif === 0) {
 			let nilf_me = player_me.deck.faction === "nilfgaard", nilf_op = player_op.deck.faction === "nilfgaard";
@@ -1480,6 +1495,55 @@ class Game {
 			if (await effect())
 				effects.splice(i,1)
 		}
+	}
+
+	startTurnTimer() {
+		this.clearTurnTimer();
+		this.turnTimerDeadline = Date.now() + this.turnDurationSeconds * 1000;
+		this.renderTurnTimer(this.turnDurationSeconds);
+		this.turnTimer = setInterval(() => {
+			let remaining = Math.max(0, Math.ceil((this.turnTimerDeadline - Date.now()) / 1000));
+			this.renderTurnTimer(remaining);
+			if (remaining <= 0)
+				this.clearTurnTimer();
+		}, 250);
+	}
+
+	clearTurnTimer() {
+		if (this.turnTimer) {
+			clearInterval(this.turnTimer);
+			this.turnTimer = null;
+		}
+	}
+
+	renderTurnTimer(seconds) {
+		if (!this.turnTimerElem || !this.turnTimerTextElem)
+			return;
+		this.turnTimerElem.classList.toggle("hide", this.mode !== "pvp");
+		if (this.forfeitButtonElem)
+			this.forfeitButtonElem.classList.toggle("hide", this.mode !== "pvp");
+		this.turnTimerTextElem.innerHTML = seconds + "s";
+		this.turnTimerElem.classList.toggle("timer-warning", seconds <= 15 && seconds > 5);
+		this.turnTimerElem.classList.toggle("timer-danger", seconds <= 5);
+	}
+
+	setMode(mode) {
+		this.mode = mode;
+		this.renderTurnTimer(this.turnDurationSeconds);
+	}
+
+	async forfeitMatch() {
+		if (this.mode !== "pvp")
+			return;
+		await new Promise(resolve => {
+			ui.popup("Forfeit", async () => {
+				this.clearTurnTimer();
+				this.setMode("pvc");
+				await ui.notification("lose-round", 1200);
+				this.returnToCustomization();
+				resolve(true);
+			}, "Cancel", () => resolve(false), "Forfeit Match", "If you forfeit this PvP match, the other player wins immediately.");
+		});
 	}
 	
 }
@@ -1677,6 +1741,7 @@ class Card {
 		elem.appendChild( document.createElement("div") ); // animation overlay
 		return elem;
 	}
+
 }
 
 // Handles notifications and client interration with menus
@@ -1688,6 +1753,7 @@ class UI {
 		this.previewCard = null;
 		this.lastRow = null;
 		document.getElementById("pass-button").addEventListener("click", () => player_me.passRound(), false);
+		document.getElementById("forfeit-button").addEventListener("click", () => game.forfeitMatch(), false);
 		document.getElementById("click-background").addEventListener("click", () => ui.cancel(), false);
 		this.youtube;
 		this.ytActive;
@@ -2130,6 +2196,7 @@ class Popup {
 		main.children[1].innerHTML = description ? description : "";
 		main.children[2].children[0].innerHTML = (yesName) ? yesName : "Yes";
 		main.children[2].children[1].innerHTML = (noName) ? noName : "No";
+		main.children[2].children[1].classList.toggle("hide", !noName);
 		
 		this.elem.classList.remove("hide");
 		Popup.setCurrent(this);
@@ -2159,6 +2226,7 @@ class Popup {
 	// Clears the popup and diables player interraction
 	clear() {
 		ui.enablePlayer(false);
+		this.elem.children[0].children[2].children[1].classList.remove("hide");
 		this.elem.classList.add("hide");
 		Popup.clearCurrent();
 	}
@@ -2185,18 +2253,49 @@ class DeckMaker {
 		this.change_elem = document.getElementById("change-faction");
 		this.change_elem.addEventListener("click", () => this.selectFaction(), false);
 		
-		document.getElementById("download-deck").addEventListener("click", () => this.downloadDeck(), false);
-		document.getElementById("add-file").addEventListener("change", () => this.uploadDeck(), false);
-		document.getElementById("start-game").addEventListener("click", () => this.startNewGame(), false);
+		this.playerProfile = window.__GWENT_SERVICES__ ? window.__GWENT_SERVICES__.identity.getProfile() : {id: "local-player", displayName: "Player"};
+		this.multiplayerService = window.__GWENT_SERVICES__ ? window.__GWENT_SERVICES__.multiplayer : null;
+		this.queueElem = document.getElementById("pvp-status");
+		this.queueStatusElem = document.getElementById("pvp-status-line");
+		this.queueActive = false;
 		
+		document.getElementById("download-deck").addEventListener("click", () => this.downloadDeck(), false);
+		document.getElementById("play-vs-computer").addEventListener("click", () => this.startVsComputer(), false);
+		document.getElementById("play-vs-player").addEventListener("click", () => this.startVsPlayer(), false);
+		document.getElementById("cancel-pvp-queue").addEventListener("click", () => this.cancelPvPQueue(), false);
+		
+		this.initPlayerProfile();
 		this.update();
+	}
+
+	initPlayerProfile() {
+		document.getElementById("player-display-name").innerHTML = this.playerProfile.displayName;
+		let endpoint = this.multiplayerService ? this.multiplayerService.getConfig() : {enabled:false, endpoint:""};
+		let status = document.getElementById("multiplayer-endpoint-status");
+		status.innerHTML = endpoint.enabled ? "Multiplayer service ready" : "Multiplayer service not configured";
+		status.classList.toggle("service-online", endpoint.enabled);
+		status.classList.toggle("service-offline", !endpoint.enabled);
+	}
+
+	async showModal(title, description, yesName, noName) {
+		return new Promise(resolve => {
+			ui.popup(yesName, () => resolve(true), noName, () => resolve(false), title, description);
+		});
+	}
+
+	async showAlert(message, title) {
+		await this.showModal(title ? title : "Notice", message, "OK", "");
+	}
+
+	async showConfirm(message, title, yesName, noName) {
+		return await this.showModal(title ? title : "Confirm", message, yesName ? yesName : "Yes", noName ? noName : "No");
 	}
 	
 	// Called when client selects a deck faction. Clears previous cards and makes valid cards available.
-	setFaction(faction_name, silent){
+	async setFaction(faction_name, silent){
 		if (!silent && this.faction === faction_name)
 			return false;
-		if (!silent && !confirm("Changing factions will clear the current deck. Continue? "))
+		if (!silent && !await this.showConfirm("Changing factions will clear the current deck. Continue?", "Change Faction", "Continue", "Cancel"))
 			return false;
 		this.elem.getElementsByTagName("h1")[0].innerHTML = factions[faction_name].name;
 		this.elem.getElementsByTagName("h1")[0].style.backgroundImage = iconURL("deck_shield_" + faction_name);
@@ -2334,8 +2433,8 @@ class DeckMaker {
 			return {abilities: [f], filename: f, desc_name: factions[f].name, desc: factions[f].description, faction: "faction"};
 		});
 		let index = container.cards.reduce((a,c,i) => c.filename === this.faction ? i : a, 0);
-		ui.queueCarousel(container, 1, (c,i) => {
-			let change = this.setFaction(c.cards[i].filename);
+		ui.queueCarousel(container, 1, async (c,i) => {
+			let change = await this.setFaction(c.cards[i].filename);
 			if (!change)
 				return;
 			this.makeBank(c.cards[i].filename);
@@ -2381,14 +2480,14 @@ class DeckMaker {
 	}
 	
 	// Verifies current deck, creates the players and their decks, then starts a new game
-	startNewGame(){
+	async startVsComputer(){
 		let warning = "";
 		if (this.stats.units < 22)
 			warning += "Your deck must have at least 22 unit cards. \n";
 		if (this.stats.special > 10)
 			warning += "Your deck must have no more than 10 special cards. \n";
 		if (warning != "")
-			return alert(warning);
+			return await this.showAlert(warning, "Deck Requirements");
 		
 		let me_deck = { 
 			faction: this.faction,
@@ -2408,7 +2507,55 @@ class DeckMaker {
 		player_op = new Player(1, "Player 2", op_deck);
 		
 		this.elem.classList.add("hide");
+		game.setMode("pvc");
 		game.startGame();
+	}
+
+	startNewGame(){
+		return this.startVsComputer();
+	}
+
+	async startVsPlayer(){
+		let warning = "";
+		if (this.stats.units < 22)
+			warning += "Your deck must have at least 22 unit cards. \n";
+		if (this.stats.special > 10)
+			warning += "Your deck must have no more than 10 special cards. \n";
+		if (warning != "")
+			return await this.showAlert(warning, "Deck Requirements");
+		if (!this.multiplayerService) {
+			return await this.showAlert("Multiplayer service layer is not available.", "Multiplayer");
+		}
+		
+		this.queueActive = true;
+		game.setMode("pvp");
+		this.queueElem.classList.remove("hide");
+		this.queueStatusElem.innerHTML = "Finding opponent for " + this.playerProfile.displayName + "...";
+		
+		try {
+			let result = await this.multiplayerService.joinQueue({
+				playerId: this.playerProfile.id,
+				displayName: this.playerProfile.displayName,
+				deck: this.deckToJSON()
+			});
+			if (!this.queueActive)
+				return;
+			if (result.status === "service_unconfigured"){
+				this.queueStatusElem.innerHTML = "Set a multiplayer server URL to enable PvP.";
+				return;
+			}
+			this.queueStatusElem.innerHTML = "Queued for PvP. Waiting for match on " + result.endpoint;
+		} catch (e) {
+			this.queueStatusElem.innerHTML = "Unable to join PvP queue right now.";
+		}
+	}
+
+	async cancelPvPQueue(){
+		this.queueActive = false;
+		this.queueElem.classList.add("hide");
+		this.queueStatusElem.innerHTML = "Not in queue";
+		if (this.multiplayerService)
+			await this.multiplayerService.cancelQueue();
 	}
 	
 	// Converts the current deck to a JSON string
@@ -2437,11 +2584,11 @@ class DeckMaker {
 		if (files.length <= 0)
 			return false;
 		let fr = new FileReader();
-		fr.onload = e => {
+		fr.onload = async e => {
 			try {
-				this.deckFromJSON(e.target.result);
+				await this.deckFromJSON(e.target.result);
 			} catch (e) {
-				alert("Uploaded deck is not formatted correctly!");
+				await this.showAlert("Uploaded deck is not formatted correctly!", "Deck Import");
 			}
 		}
 		fr.readAsText(files.item(0));
@@ -2450,12 +2597,12 @@ class DeckMaker {
 	
 	// Creates a deck from a JSON file's contents and sets that as the current deck
 	// Notifies client with warnings if the deck is invalid
-	deckFromJSON(json) {
+	async deckFromJSON(json) {
 		let deck;
 		try {
 			deck = JSON.parse(json);
 		} catch (e) {
-			alert("Uploaded deck is not parsable!");
+			await this.showAlert("Uploaded deck is not parsable!", "Deck Import");
 			return;
 		}
 		let warning = "";
@@ -2482,9 +2629,9 @@ class DeckMaker {
 		})
 		.map(c => ({index:c[0], count:Math.min(c[1], card_dict[c[0]].count)}) );
 		
-		if (warning && !confirm(warning + "\n\n\Continue importing deck?"))
+		if (warning && !await this.showConfirm(warning, "Import Deck", "Import", "Cancel"))
 			return;
-		this.setFaction(deck.faction, true);
+		await this.setFaction(deck.faction, true);
 		if (card_dict[deck.leader].row === "leader" && deck.faction === card_dict[deck.leader].deck){
 			this.leader = this.leaders.filter(c => c.index === deck.leader)[0];
 			this.leader_elem.children[1].style.backgroundImage = largeURL(this.leader.card.deck + "_" + this.leader.card.filename);

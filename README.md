@@ -1,7 +1,7 @@
 # gwent-classic
 ![cover](https://user-images.githubusercontent.com/26311830/116256903-f1599b00-a7b6-11eb-84a1-16dcb5c9bfc6.jpg)
 
-A browser remake of the original Gwent minigame from The Witcher 3: Wild Hunt including all cards from the DLC. To play, download the repo and open index.html in a browser. For the best experience, play in fullscreen which can be toggled in most browsers with F11.
+A browser remake of the original Gwent minigame from The Witcher 3: Wild Hunt including all cards from the DLC. Run it locally with Vite using the commands below. For the best experience, play in fullscreen which can be toggled in most browsers with F11.
 
 ## Run locally
 This project now runs with React, TypeScript, and Vite.
@@ -19,6 +19,35 @@ To create a production build:
 npm run build
 npm run preview
 ```
+
+## Multiplayer service
+The current UI includes a PvP entry flow backed by a separate client-side service layer. The actual match server is not bundled yet, but the frontend is prepared to connect to one.
+
+Set a multiplayer API base URL before starting Vite:
+
+```bash
+export VITE_GWENT_MULTIPLAYER_URL=http://localhost:3001
+npm run dev
+```
+
+The client will send PvP queue requests to:
+
+- `POST /queue/join`
+- `POST /queue/leave`
+
+`/queue/join` currently expects JSON shaped like:
+
+```json
+{
+  "playerId": "anonymous-client-id",
+  "displayName": "Wolf-2731",
+  "deck": "{\"faction\":\"realms\",\"leader\":24,\"cards\":[[5,1]]}"
+}
+```
+
+If you want to host your own multiplayer backend, point `VITE_GWENT_MULTIPLAYER_URL` at your server and implement those endpoints first. The client-side identity is anonymous and stored in `localStorage`, so no account system is required for local testing.
+
+For open-source hosting, a Dockerized Node/TypeScript WebSocket server is the intended path. Public matchmaking should come first. Private friend invites or join-by-session-code should be added after the queue flow is stable.
 
 ## Rules
 The game is played in the same way as the original. The player aims to win two of three rounds, where victory within a given round is determined by whoever scores the most points. 
@@ -42,8 +71,8 @@ This remake aims to resemble the orignal minigame as closely as possible from th
 #### AI opponent
 When you start a game you will face off againsts a fully implemented AI oponent. The opponent uses premade decks and will make intelligent decisions based on the cards in its hand, on the table, and in the discard piles.
 
-#### Customize, save and upload decks
-You can select a faction to play as at the top of the screen and then add and remove cards from your deck by clicking on the cards in either scroll-down menu. You can also pick a leader card by selecting the current leader and scrolling through the options for that faction. At the top of the screen there are buttons to upload and download decks to play with. These are stored in json format and are checked to see if they comply with their assigned faction and maximum card counts.
+#### Customize and save decks
+You can select a faction to play as at the top of the screen and then add and remove cards from your deck by clicking on the cards in either scroll-down menu. You can also pick a leader card by selecting the current leader and scrolling through the options for that faction. The current deck can be downloaded and reused for future multiplayer queueing. Deck upload is currently hidden while the multiplayer flow is being stabilized.
 
 #### Music tracks
 The gwent music tracks are streamed from YouTube and can be toggled by pressing the music icon in the center of the customization screen or the bottom-left of the game screen. For some browsers, the page may need to be refreshed once before the music can be activated.
