@@ -2258,6 +2258,7 @@ class DeckMaker {
 		this.queueElem = document.getElementById("pvp-status");
 		this.queueStatusElem = document.getElementById("pvp-status-line");
 		this.queueActive = false;
+		this.queuePollTimer = null;
 		
 		document.getElementById("download-deck").addEventListener("click", () => this.downloadDeck(), false);
 		document.getElementById("play-vs-computer").addEventListener("click", () => this.startVsComputer(), false);
@@ -2544,18 +2545,55 @@ class DeckMaker {
 				this.queueStatusElem.innerHTML = "Set a multiplayer server URL to enable PvP.";
 				return;
 			}
+			if (result.status === "matched" && result.opponent) {
+				await this.handleMatchedQueue(result);
+				return;
+			}
 			this.queueStatusElem.innerHTML = "Queued for PvP. Waiting for match on " + result.endpoint;
+			this.startQueuePolling();
 		} catch (e) {
 			this.queueStatusElem.innerHTML = "Unable to join PvP queue right now.";
 		}
 	}
 
 	async cancelPvPQueue(){
+		this.clearQueuePolling();
 		this.queueActive = false;
 		this.queueElem.classList.add("hide");
 		this.queueStatusElem.innerHTML = "Not in queue";
 		if (this.multiplayerService)
-			await this.multiplayerService.cancelQueue();
+			await this.multiplayerService.cancelQueue({playerId: this.playerProfile.id});
+	}
+
+	startQueuePolling(){
+		this.clearQueuePolling();
+		this.queuePollTimer = setInterval(async () => {
+			if (!this.queueActive || !this.multiplayerService)
+				return;
+			try {
+				let result = await this.multiplayerService.getQueueStatus({playerId: this.playerProfile.id});
+				if (!this.queueActive)
+					return;
+				if (result.status === "matched" && result.opponent) {
+					await this.handleMatchedQueue(result);
+				}
+			} catch (e) {
+			}
+		}, 2000);
+	}
+
+	clearQueuePolling(){
+		if (this.queuePollTimer) {
+			clearInterval(this.queuePollTimer);
+			this.queuePollTimer = null;
+		}
+	}
+
+	async handleMatchedQueue(result){
+		this.clearQueuePolling();
+		this.queueActive = false;
+		this.queueStatusElem.innerHTML = "Match found against " + result.opponent.displayName + ".";
+		await this.showAlert("Matched with " + result.opponent.displayName + ". Real-time PvP gameplay sync is the next backend step.", "Opponent Found");
 	}
 	
 	// Converts the current deck to a JSON string

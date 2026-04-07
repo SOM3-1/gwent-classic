@@ -1110,12 +1110,13 @@ main { background-image: url('img/boardtest8.png'); }
 
 #play-modes {
 	position: absolute;
-	top: 90.2%;
-	left: 39.5%;
-	width: 21%;
+	top: 90.4%;
+	left: 63.5%;
+	width: 28%;
 	display: flex;
 	justify-content: center;
 	gap: 0.8vw;
+	z-index: 87;
 }
 
 #pvp-status h2 {
@@ -1154,23 +1155,27 @@ main { background-image: url('img/boardtest8.png'); }
 
 #play-modes button,
 #pvp-status button {
-	width: 10vw;
-	padding: 0.45vw 0.55vw;
-	font-size: 0.92vw;
+	width: 11vw;
+	padding: 0.55vw 0.7vw;
+	font-size: 1vw;
 	color: white;
-	background-color: rgb(20,20,20);
-	border: 0.1vw ridge rgb(30,30,30);
+	background: linear-gradient(180deg, rgba(41,31,18,0.95) 0%, rgba(19,15,11,0.97) 100%);
+	border: 0.1vw solid rgba(179, 146, 90, 0.62);
+	border-radius: 0.45vw;
+	box-shadow: 0 0.2vw 0.6vw rgba(0,0,0,0.35);
 }
 
 #pvp-status {
 	position: absolute;
-	top: 79.8%;
-	left: 39.5%;
-	width: 21%;
+	top: 78.4%;
+	left: 63.5%;
+	width: 27%;
 	padding: 0.85vw 1vw;
-	background: rgba(19, 16, 12, 0.9);
-	border: 0.1vw solid rgba(154, 128, 78, 0.45);
+	background: linear-gradient(180deg, rgba(34, 26, 18, 0.94) 0%, rgba(18, 14, 11, 0.95) 100%);
+	border: 0.1vw solid rgba(154, 128, 78, 0.5);
 	border-radius: 0.6vw;
+	box-shadow: 0 0.35vw 0.9vw rgba(0,0,0,0.35);
+	z-index: 87;
 }
 
 #pvp-status button {

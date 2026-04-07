@@ -21,12 +21,20 @@ npm run preview
 ```
 
 ## Multiplayer service
-The current UI includes a PvP entry flow backed by a separate client-side service layer. The actual match server is not bundled yet, but the frontend is prepared to connect to one.
+The current UI includes a PvP entry flow backed by a separate client-side service layer. The backend service lives in the separate repository `gwent-multiplayer-service`.
 
 Set a multiplayer API base URL before starting Vite:
 
 ```bash
 export VITE_GWENT_MULTIPLAYER_URL=http://localhost:3001
+npm run dev
+```
+
+Run the backend service in the separate repo:
+
+```bash
+cd /Users/dush/Gwent/gwent-multiplayer-service
+npm install
 npm run dev
 ```
 
@@ -47,7 +55,7 @@ The client will send PvP queue requests to:
 
 If you want to host your own multiplayer backend, point `VITE_GWENT_MULTIPLAYER_URL` at your server and implement those endpoints first. The client-side identity is anonymous and stored in `localStorage`, so no account system is required for local testing.
 
-For open-source hosting, a Dockerized Node/TypeScript WebSocket server is the intended path. Public matchmaking should come first. Private friend invites or join-by-session-code should be added after the queue flow is stable.
+For open-source hosting, a lightweight Node service is now scaffolded in `gwent-multiplayer-service`. Public matchmaking should come first. Private friend invites or join-by-session-code should be added after the queue flow is stable.
 
 ## Rules
 The game is played in the same way as the original. The player aims to win two of three rounds, where victory within a given round is determined by whoever scores the most points. 

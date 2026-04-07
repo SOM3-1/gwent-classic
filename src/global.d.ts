@@ -12,6 +12,16 @@ interface Window {
         endpoint: string;
         enabled: boolean;
       };
+      getQueueStatus: (payload: {
+        playerId: string;
+      }) => Promise<{
+        status: string;
+        matchId: string | null;
+        opponent?: {
+          playerId: string;
+          displayName: string;
+        } | null;
+      }>;
       joinQueue: (payload: {
         playerId: string;
         displayName: string;
@@ -20,8 +30,14 @@ interface Window {
         status: string;
         endpoint: string;
         matchId: string | null;
+        opponent?: {
+          playerId: string;
+          displayName: string;
+        } | null;
       }>;
-      cancelQueue: () => Promise<void>;
+      cancelQueue: (payload: {
+        playerId: string;
+      }) => Promise<void>;
     };
   };
 }
