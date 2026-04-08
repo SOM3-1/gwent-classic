@@ -218,6 +218,7 @@ export const appMarkup = `
     <p id="player-display-name">Generating...</p>
     <p id="multiplayer-endpoint-status">Multiplayer service not configured</p>
     <p id="pvp-status-line">Not in queue</p>
+    <button id="pvp-pass-turn" class="hide">Pass Turn</button>
     <button id="cancel-pvp-queue">Cancel Queue</button>
   </section>
 </section>

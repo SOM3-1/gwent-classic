@@ -12,3 +12,4 @@ node_modules
 public/img
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
+PVP_PARITY_CHECKLIST.md

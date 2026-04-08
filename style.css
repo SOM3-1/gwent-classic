@@ -800,9 +800,9 @@ main { background-image: url('img/boardtest8.png'); }
 #pass-button {
 	top: 82%;
 	left: 63%;
-	width:20%;
+	width: 20%;
 	height: 4%;
-	
+	z-index: 30;
 	font-size: 2vw;
 	font-weight: bold;
 	
@@ -812,10 +812,11 @@ main { background-image: url('img/boardtest8.png'); }
 }
 
 #forfeit-button {
-	top: 82%;
+	top: 78.1%;
 	left: 41%;
 	width: 18%;
 	height: 4%;
+	z-index: 30;
 	font-size: 1.55vw;
 	font-weight: bold;
 	color: #dcb7a4;
@@ -829,6 +830,7 @@ main { background-image: url('img/boardtest8.png'); }
 	left: 63%;
 	width: 20%;
 	height: 3.2%;
+	z-index: 30;
 	font-size: 1.3vw;
 	font-weight: bold;
 	color: #ead7ac;
@@ -836,6 +838,17 @@ main { background-image: url('img/boardtest8.png'); }
 	border-radius: .45vw;
 	background-color: rgba(20,20,20,.75);
 	text-shadow: 0 0 .35vw black;
+}
+
+#turn-timer.timer-op {
+	top: 16.8%;
+	left: 63%;
+}
+
+#turn-timer.timer-redraw {
+	top: 46.2%;
+	left: 40%;
+	width: 20%;
 }
 
 #turn-timer.timer-warning {

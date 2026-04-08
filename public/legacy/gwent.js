@@ -452,6 +452,10 @@ class Player {
 		let x = document.querySelector("#stats-" +this.tag+ " .profile-img > div > div");
 		x.style.backgroundImage = iconURL("deck_shield_" + deck.faction);
 	}
+
+	setController(controller) {
+		this.controller = controller;
+	}
 	
 	// Sets default values
 	reset(){
@@ -545,6 +549,8 @@ class Player {
 	
 	// Handles end of turn visuals and behavior the notifies the game
 	endTurn(){
+		if (game.mode === "pvp")
+			return;
 		if (!this.passed && !this.canPlay())
 			this.setPassed(true);
 		if (this === player_me){
@@ -577,6 +583,12 @@ class Player {
 		ui.showPreviewVisuals(this.leader);
 		await sleep(1500);
 		ui.hidePreview(this.leader);
+		if (game.mode === "pvp") {
+			if (this !== player_me || !dm)
+				return;
+			await dm.sendPvPAction("activate_leader");
+			return;
+		}
 		await this.leader.activated[0](this.leader, this);
 		this.disableLeader();
 		this.endTurn();
@@ -1032,8 +1044,10 @@ class Row extends CardContainer {
 		let total = card.basePower;
 		if (card.hero)
 			return total;
-		if (this.effects.weather) 
-			total = Math.min(1, total);
+		if (this.effects.weather) {
+			let player = this.elem_parent.parentElement.id === "field-op" ? player_op : player_me;
+			total = player && player.halfWeather ? Math.max(1, Math.ceil(total / 2)) : Math.min(1, total);
+		}
 		if (game.doubleSpyPower && card.abilities.includes("spy"))
 			total *= 2;
 		let bond = this.effects.bond[card.id()];
@@ -1232,8 +1246,10 @@ class Board {
 	// Returns the CardCard associated with the row name that the card would be sent to
 	getRow(card, row_name, player){
 		player = player ? player : card ? card.holder : player_me;
+		if (!card && ["close", "ranged", "siege"].includes(row_name))
+			return null;
 		let isMe = player === player_me;
-		let isSpy = card.abilities.includes("spy");
+		let isSpy = card && card.abilities ? card.abilities.includes("spy") : false;
 		switch (row_name) {
 			case "weather": return weather; break;
 			case "close":  return this.row[ isMe^isSpy ? 3 : 2];
@@ -1242,7 +1258,7 @@ class Board {
 			case "grave": return player.grave;
 			case "deck": return player.deck;
 			case "hand": return player.hand;
-			default: console.error( card.name + " sent to incorrect row \"" +row_name+ "\" by " +card.holder.name );
+			default: console.error( (card ? card.name : "null") + " sent to incorrect row \"" +row_name+ "\" by " +(card && card.holder ? card.holder.name : "unknown") );
 		}
 	}
 	
@@ -1273,6 +1289,17 @@ class Game {
 	
 	reset() {
 		this.setMode("pvc");
+		this.activeMatchId = null;
+		this.activeMatchBootstrap = null;
+		this.lastPvPTimerKey = null;
+		this.lastPvPTurnNoticeKey = null;
+		this.lastPvPActionNoticeKey = null;
+		this.lastPvPCoinMatchId = null;
+		this.lastPvPStartMatchId = null;
+		this.lastPvPRoundNoticeKey = null;
+		this.lastPvPRoundStartKey = null;
+		this.pvpBoardEntered = false;
+		this.deferPvPTimer = false;
 		this.clearTurnTimer();
 		this.renderTurnTimer(this.turnDurationSeconds);
 		this.firstPlayer;
@@ -1472,8 +1499,10 @@ class Game {
 	// Returns the client to the deck customization screen
 	returnToCustomization(){
 		this.reset();
-		player_me.reset();
-		player_op.reset();
+		if (player_me)
+			player_me.reset();
+		if (player_op)
+			player_op.reset();
 		ui.toggleMusic_elem.classList.add("music-customization");
 		this.endScreen.classList.add("hide");
 		document.getElementById("deck-customization").classList.remove("hide");
@@ -1482,8 +1511,10 @@ class Game {
 	// Restarts the last game with the dame decks
 	restartGame(){
 		this.reset();
-		player_me.reset();
-		player_op.reset();
+		if (player_me)
+			player_me.reset();
+		if (player_op)
+			player_op.reset();
 		this.endScreen.classList.add("hide");
 		this.startGame();
 	}
@@ -1497,15 +1528,28 @@ class Game {
 		}
 	}
 
-	startTurnTimer() {
+	startTurnTimer(deadlineAt) {
 		this.clearTurnTimer();
-		this.turnTimerDeadline = Date.now() + this.turnDurationSeconds * 1000;
-		this.renderTurnTimer(this.turnDurationSeconds);
+		this.turnTimerDeadline = deadlineAt ? new Date(deadlineAt).getTime() : Date.now() + this.turnDurationSeconds * 1000;
+		if (!Number.isFinite(this.turnTimerDeadline))
+			this.turnTimerDeadline = Date.now() + this.turnDurationSeconds * 1000;
+		this.renderTurnTimer(Math.max(0, Math.ceil((this.turnTimerDeadline - Date.now()) / 1000)), "Turn");
 		this.turnTimer = setInterval(() => {
 			let remaining = Math.max(0, Math.ceil((this.turnTimerDeadline - Date.now()) / 1000));
-			this.renderTurnTimer(remaining);
-			if (remaining <= 0)
+			this.renderTurnTimer(remaining, "Turn");
+			if (remaining <= 0) {
 				this.clearTurnTimer();
+				if (
+					this.mode === "pvp"
+					&& this.activeMatchId
+					&& dm
+					&& this.activeMatchBootstrap
+					&& this.activeMatchBootstrap.status === "active"
+					&& this.activeMatchBootstrap.currentTurnPlayerId === this.activeMatchBootstrap.self.playerId
+					&& !this.activeMatchBootstrap.self.passed
+				)
+					dm.sendPvPAction("pass");
+			}
 		}, 250);
 	}
 
@@ -1516,20 +1560,269 @@ class Game {
 		}
 	}
 
-	renderTurnTimer(seconds) {
+	renderTurnTimer(seconds, label) {
 		if (!this.turnTimerElem || !this.turnTimerTextElem)
 			return;
 		this.turnTimerElem.classList.toggle("hide", this.mode !== "pvp");
 		if (this.forfeitButtonElem)
 			this.forfeitButtonElem.classList.toggle("hide", this.mode !== "pvp");
-		this.turnTimerTextElem.innerHTML = seconds + "s";
+		this.turnTimerTextElem.innerHTML = (label ? label + " " : "") + seconds + "s";
 		this.turnTimerElem.classList.toggle("timer-warning", seconds <= 15 && seconds > 5);
 		this.turnTimerElem.classList.toggle("timer-danger", seconds <= 5);
 	}
 
 	setMode(mode) {
 		this.mode = mode;
-		this.renderTurnTimer(this.turnDurationSeconds);
+		this.renderTurnTimer(this.turnDurationSeconds, "Turn");
+	}
+
+	handlePassAction() {
+		if (!player_me)
+			return;
+		if (this.mode === "pvp") {
+			if (dm && this.activeMatchId)
+				dm.sendPvPAction("pass");
+			return;
+		}
+		player_me.passRound();
+	}
+
+	createDeckFromSnapshot(deckJson) {
+		let deck = typeof deckJson === "string" ? JSON.parse(deckJson) : deckJson;
+		return {
+			faction: deck.faction,
+			leader: card_dict[deck.leader],
+			cards: deck.cards ? deck.cards.map(c => ({index: c[0], count: c[1]})) : []
+		};
+	}
+
+	resetPileCount(deck, count){
+		deck.reset();
+		deck.cards = [];
+		for (let i=0; i<count; ++i) {
+			deck.cards.push(null);
+			deck.addCardElement();
+		}
+		deck.resize();
+	}
+
+	populateHand(hand, holder, ids){
+		hand.reset();
+		ids.forEach(entry => {
+			let card = new Card(card_dict[entry.cardId], holder);
+			card.pvpInstanceId = entry.instanceId;
+			hand.addCard(card);
+		});
+	}
+
+	syncPvPPlayerState(player, state, isSelf){
+		if (!player || !state)
+			return;
+		player.halfWeather = !!state.halfWeather;
+		player.setPassed(state.passed);
+		if (state.leaderAvailable)
+			player.enableLeader();
+		else
+			player.disableLeader();
+		document.getElementById("gem1-" + player.tag).classList.toggle("gem-on", state.health >= 1);
+		document.getElementById("gem2-" + player.tag).classList.toggle("gem-on", state.health >= 2);
+		if (isSelf) {
+			this.populateHand(player.hand, player, state.hand);
+			this.resetPileCount(player.deck, state.deckCount);
+		} else {
+			player.hand.cards = new Array(state.handCount).fill(null);
+			player.hand.resize();
+			this.resetPileCount(player.deck, state.deckCount);
+		}
+	}
+
+	resetPvPBoardRows(){
+		weather.reset();
+		board.row.forEach(row => row.reset());
+		player_me.total = 0;
+		player_op.total = 0;
+		document.getElementById("score-total-me").children[0].innerHTML = "0";
+		document.getElementById("score-total-op").children[0].innerHTML = "0";
+	}
+
+	renderPvPRowState(row, ids, holder){
+		ids.forEach(id => {
+			let card = new Card(card_dict[id], holder);
+			CardContainer.prototype.addCard.call(row, card, row.cards.length);
+			card.elem.classList.add("noclick");
+		});
+		row.resize();
+	}
+
+	renderPvPSpecialState(row, id, holder){
+		if (id === null || id === undefined)
+			return;
+		let card = new Card(card_dict[id], holder);
+		row.special = card;
+		row.elem_special.appendChild(card.elem);
+		row.updateState(card, true);
+		card.elem.classList.add("noclick");
+		row.updateScore();
+	}
+
+	renderPvPWeatherState(ids){
+		ids.forEach(id => {
+			let card = new Card(card_dict[id], player_me);
+			CardContainer.prototype.addCard.call(weather, card, weather.cards.length);
+			card.elem.classList.add("noclick");
+			weather.changeWeather(card, x => ++weather.types[x].count === 1, (r,t) => r.addOverlay(t.name));
+		});
+		weather.resize();
+	}
+
+	renderPvPBoardState(state){
+		this.resetPvPBoardRows();
+		this.renderPvPRowState(board.row[2], state.opponent.rows.close, player_op);
+		this.renderPvPRowState(board.row[1], state.opponent.rows.ranged, player_op);
+		this.renderPvPRowState(board.row[0], state.opponent.rows.siege, player_op);
+		this.renderPvPSpecialState(board.row[2], state.opponent.specialRows.close, player_op);
+		this.renderPvPSpecialState(board.row[1], state.opponent.specialRows.ranged, player_op);
+		this.renderPvPSpecialState(board.row[0], state.opponent.specialRows.siege, player_op);
+		this.renderPvPRowState(board.row[3], state.self.rows.close, player_me);
+		this.renderPvPRowState(board.row[4], state.self.rows.ranged, player_me);
+		this.renderPvPRowState(board.row[5], state.self.rows.siege, player_me);
+		this.renderPvPSpecialState(board.row[3], state.self.specialRows.close, player_me);
+		this.renderPvPSpecialState(board.row[4], state.self.specialRows.ranged, player_me);
+		this.renderPvPSpecialState(board.row[5], state.self.specialRows.siege, player_me);
+		this.renderPvPWeatherState(state.gameState.weather);
+		player_me.total = state.self.total;
+		player_op.total = state.opponent.total;
+		document.getElementById("score-total-me").children[0].innerHTML = state.self.total;
+		document.getElementById("score-total-op").children[0].innerHTML = state.opponent.total;
+		board.updateLeader();
+	}
+
+	enterPvPMatch(state){
+		if (!state || !state.self || !state.opponent)
+			return;
+		let meDeck = this.createDeckFromSnapshot(state.self.deck);
+		let opDeck = this.createDeckFromSnapshot(state.opponent.deck);
+		this.reset();
+		document.querySelector("#leader-me .leader-container").innerHTML = "";
+		document.querySelector("#leader-op .leader-container").innerHTML = "";
+		player_me = new Player(0, state.self.displayName, meDeck);
+		player_op = new Player(1, state.opponent.displayName, opDeck);
+		player_me.setController(new Controller());
+		player_op.setController(new Controller());
+		player_me.disableLeader();
+		player_op.disableLeader();
+		document.getElementById("deck-customization").classList.add("hide");
+		ui.toggleMusic_elem.classList.remove("music-customization");
+		this.setMode("pvp");
+		this.activeMatchId = state.matchId;
+		this.activeMatchBootstrap = state;
+		this.pvpBoardEntered = true;
+		ui.enablePlayer(true);
+		this.applyPvPState(state);
+	}
+
+	async announcePvPCoin(state){
+		if (this.lastPvPCoinMatchId === state.matchId)
+			return;
+		this.lastPvPCoinMatchId = state.matchId;
+		await ui.notification(state.currentTurnPlayerId === state.self.playerId ? "me-coin" : "op-coin", 1200);
+	}
+
+	async announcePvPStart(state){
+		let startKey = state.matchId + ":" + state.round + ":" + state.turnNumber + ":" + state.currentTurnPlayerId;
+		if (this.lastPvPStartMatchId === startKey)
+			return;
+		this.lastPvPStartMatchId = startKey;
+		this.lastPvPTurnNoticeKey = startKey + ":" + state.status;
+		await ui.notification("round-start", 1200);
+		await ui.notification(state.currentTurnPlayerId === state.self.playerId ? "me-turn" : "op-turn", 1200);
+	}
+
+	applyPvPState(state){
+		if (this.mode !== "pvp" || !player_me || !player_op)
+			return;
+		ui.enablePlayer(true);
+		this.activeMatchId = state.matchId;
+		this.activeMatchBootstrap = state;
+		this.syncPvPPlayerState(player_me, state.self, true);
+		this.syncPvPPlayerState(player_op, state.opponent, false);
+		this.renderPvPBoardState(state);
+		let hasPendingChoice = !!(state.gameState && state.gameState.pendingChoice);
+		document.getElementById("stats-me").classList.remove("current-turn");
+		document.getElementById("stats-op").classList.remove("current-turn");
+		let isMyTurn = state.status === "active" && state.currentTurnPlayerId === state.self.playerId && !state.self.passed && !hasPendingChoice;
+		let activeStats = isMyTurn ? document.getElementById("stats-me") : state.status === "active" ? document.getElementById("stats-op") : null;
+		if (activeStats)
+			activeStats.classList.add("current-turn");
+		document.getElementById("pass-button").classList.toggle("noclick", !isMyTurn);
+		player_me.hand.cards.forEach(card => card.elem.classList.remove("noclick"));
+		let lastAction = state.actionLog && state.actionLog.length > 0 ? state.actionLog[state.actionLog.length - 1] : null;
+		let passNoticeKey = lastAction && lastAction.type === "pass" ? lastAction.playerId + ":" + lastAction.at : null;
+		if (passNoticeKey && this.lastPvPActionNoticeKey !== passNoticeKey) {
+			this.lastPvPActionNoticeKey = passNoticeKey;
+			ui.notification(lastAction.playerId === state.self.playerId ? "me-pass" : "op-pass", 1200);
+		}
+		let timerKey = state.matchId + ":" + state.round + ":" + state.turnNumber + ":" + state.currentTurnPlayerId;
+		let turnNoticeKey = timerKey + ":" + state.status;
+		if (state.status === "active" && state.gameState.phase === "active" && !this.deferPvPTimer) {
+			this.turnTimerElem.classList.toggle("timer-op", !isMyTurn);
+			this.turnTimerElem.classList.remove("timer-redraw");
+			if (this.lastPvPTimerKey !== timerKey) {
+				this.lastPvPTimerKey = timerKey;
+				this.startTurnTimer(state.turnDeadlineAt);
+			}
+			if (this.lastPvPTurnNoticeKey !== turnNoticeKey && this.lastPvPStartMatchId && this.lastPvPStartMatchId.startsWith(state.matchId + ":")) {
+				this.lastPvPTurnNoticeKey = turnNoticeKey;
+				ui.notification(isMyTurn ? "me-turn" : "op-turn", 1200);
+			}
+		} else {
+			this.clearTurnTimer();
+			this.turnTimerElem.classList.remove("timer-op");
+			this.turnTimerElem.classList.toggle("timer-redraw", state.status === "active" && state.gameState.phase === "redraw");
+			if (state.status === "active" && state.gameState.phase === "redraw" && state.gameState.redrawDeadlineAt) {
+				let redrawDeadline = new Date(state.gameState.redrawDeadlineAt).getTime();
+				let remaining = Number.isFinite(redrawDeadline) ? Math.max(0, Math.ceil((redrawDeadline - Date.now()) / 1000)) : this.turnDurationSeconds;
+				this.renderTurnTimer(remaining, "Redraw");
+			} else
+				this.renderTurnTimer(this.turnDurationSeconds, "Turn");
+		}
+	}
+
+	isSupportedPvPCard(card){
+		return this.mode === "pvp"
+			&& this.activeMatchBootstrap
+			&& this.activeMatchBootstrap.status === "active"
+			&& this.activeMatchBootstrap.gameState.phase === "active"
+			&& this.activeMatchBootstrap.currentTurnPlayerId === this.activeMatchBootstrap.self.playerId
+			&& card
+			&& card.holder === player_me
+			&& player_me.hand.cards.includes(card)
+			&& (
+				(["close", "ranged", "siege"].includes(card.row) && card.abilities.every(ability => ["hero", "bond", "morale", "horn", "mardroeme", "berserker"].includes(ability)))
+				|| (["close", "ranged", "siege"].includes(card.row) && card.abilities.some(ability => ["scorch_c", "scorch_r", "scorch_s"].includes(ability)))
+				|| card.name === "Decoy"
+				|| card.name === "Scorch"
+				|| (["close", "ranged", "siege"].includes(card.row) && card.abilities.includes("spy"))
+				|| (["close", "ranged", "siege"].includes(card.row) && card.abilities.includes("medic"))
+				|| (["close", "ranged", "siege"].includes(card.row) && card.abilities.includes("muster"))
+				|| (["close", "ranged", "siege"].includes(card.row) && card.abilities.some(ability => ["avenger", "avenger_kambi"].includes(ability)))
+				|| (card.row === "agile" && (card.abilities.length === 0 || card.abilities.every(ability => ["hero", "morale"].includes(ability))))
+				|| card.name === "Commander's Horn"
+				|| card.name === "Mardroeme"
+				|| (card.faction === "weather" && card.abilities.every(ability => ["clear", "frost", "fog", "rain", "storm"].includes(ability)))
+			);
+	}
+
+	getPvPRowName(row){
+		if (row === weather)
+			return "weather";
+		if (row === board.row[3] || row === board.row[2])
+			return "close";
+		if (row === board.row[4] || row === board.row[1])
+			return "ranged";
+		if (row === board.row[5] || row === board.row[0])
+			return "siege";
+		return "";
 	}
 
 	async forfeitMatch() {
@@ -1537,10 +1830,8 @@ class Game {
 			return;
 		await new Promise(resolve => {
 			ui.popup("Forfeit", async () => {
-				this.clearTurnTimer();
-				this.setMode("pvc");
-				await ui.notification("lose-round", 1200);
-				this.returnToCustomization();
+				if (dm && this.activeMatchId)
+					await dm.sendPvPAction("forfeit");
 				resolve(true);
 			}, "Cancel", () => resolve(false), "Forfeit Match", "If you forfeit this PvP match, the other player wins immediately.");
 		});
@@ -1562,6 +1853,7 @@ class Card {
 		this.removed = [];
 		this.activated = [];
 		this.holder = player;
+		this.pvpInstanceId = null;
 		
 		this.hero = false;
 		if (this.abilities.length > 0) {
@@ -1752,7 +2044,7 @@ class UI {
 		this.preview = document.getElementsByClassName("card-preview")[0];
 		this.previewCard = null;
 		this.lastRow = null;
-		document.getElementById("pass-button").addEventListener("click", () => player_me.passRound(), false);
+		document.getElementById("pass-button").addEventListener("click", () => game.handlePassAction(), false);
 		document.getElementById("forfeit-button").addEventListener("click", () => game.forfeitMatch(), false);
 		document.getElementById("click-background").addEventListener("click", () => ui.cancel(), false);
 		this.youtube;
@@ -1772,23 +2064,15 @@ class UI {
 	initYouTube(){
 		this.youtube = new YT.Player('youtube', {
 			videoId: "UE9fPWy1_o4",
-			playerVars:  { "autoplay" : 1, "controls" : 0, "loop" : 1, "playlist" : "UE9fPWy1_o4", "rel" : 0, "version" : 3, "modestbranding" : 1 },
+			playerVars:  { "autoplay" : 0, "controls" : 0, "loop" : 1, "playlist" : "UE9fPWy1_o4", "rel" : 0, "version" : 3, "modestbranding" : 1 },
 			events: { 'onStateChange': initButton }
 		});
 		
 		function initButton(){
 			if (ui.ytActive !== undefined)
 				return;
-			ui.ytActive = true;
-			ui.youtube.playVideo();
-			let timer = setInterval( () => {
-				if (ui.youtube.getPlayerState() !== YT.PlayerState.PLAYING)
-					ui.youtube.playVideo();
-				else {
-					clearInterval(timer);
-					ui.toggleMusic_elem.classList.remove("fade");
-				}
-			}, 500);
+			ui.ytActive = false;
+			ui.toggleMusic_elem.classList.remove("fade");
 		}
 	}
 	
@@ -1816,6 +2100,20 @@ class UI {
 	
 	// Called when the player selects a selectable card
 	async selectCard(card) {
+		if (game.mode === "pvp" && card && card.holder === player_me && player_me.hand.cards.includes(card)) {
+			if (!game.activeMatchBootstrap || game.activeMatchBootstrap.status !== "active" || game.activeMatchBootstrap.currentTurnPlayerId !== game.activeMatchBootstrap.self.playerId)
+				return;
+			if (!game.isSupportedPvPCard(card)) {
+				await dm.showAlert("This PvP build does not support this card or its full effect yet.", "PvP");
+				return;
+			}
+			let pCard = this.previewCard;
+			if (card === pCard)
+				return;
+			this.setSelectable(null, false);
+			this.showPreview(card);
+			return;
+		}
 		let row = this.lastRow;
 		let pCard = this.previewCard;
 		if (card === pCard)
@@ -1837,6 +2135,17 @@ class UI {
 		this.lastRow = row;
 		if (this.previewCard === null) {
 			await ui.viewCardsInContainer(row);
+			return;
+		}
+		if (game.mode === "pvp" && game.isSupportedPvPCard(this.previewCard)) {
+			let rowName = game.getPvPRowName(row);
+			let validRows = this.previewCard.faction === "weather" ? ["weather"] : this.previewCard.row === "agile" ? ["close", "ranged"] : [this.previewCard.row];
+			if (!validRows.includes(rowName))
+				return;
+			let card = this.previewCard;
+			this.hidePreview();
+			this.enablePlayer(false);
+			await dm.playPvPCard(card, rowName);
 			return;
 		}
 		if (this.previewCard.name === "Decoy")
@@ -2067,6 +2376,7 @@ class Carousel {
 		this.bSort = bSort;
 		this.indices = [];
 		this.index = 0;
+		this.currentInstanceId = null;
 		this.bExit = bExit;
 		this.title = title;
 		this.cancelled = false;
@@ -2093,6 +2403,9 @@ class Carousel {
 			return this.exit();
 		if (this.bSort)
 			this.indices.sort( (a, b) => Card.compare(this.container.cards[a],this.container.cards[b]) );
+		this.index = 0;
+		let selectedCard = this.container.cards[this.indices[this.index]];
+		this.currentInstanceId = selectedCard && selectedCard.pvpInstanceId ? selectedCard.pvpInstanceId : null;
 		
 		this.update();
 		Carousel.setCurrent(this);
@@ -2112,18 +2425,34 @@ class Carousel {
 	shift(event, n){
 		(event || window.event).stopPropagation();
 		this.index = Math.max(0, Math.min(this.indices.length-1, this.index+n));
+		let selectedCard = this.container.cards[this.indices[this.index]];
+		this.currentInstanceId = selectedCard && selectedCard.pvpInstanceId ? selectedCard.pvpInstanceId : null;
 		this.update();
 	}
 	
 	// Called by client to perform action on the middle card in focus
 	async select(event) {
 		(event || window.event).stopPropagation();
+		let selectedIndex = this.indices[this.index];
+		let selectedCard = this.container.cards[selectedIndex];
+		if (!selectedCard)
+			return;
+		if (selectedCard.pvpInstanceId) {
+			let liveIndex = this.container.cards.findIndex(card => card && card.pvpInstanceId === selectedCard.pvpInstanceId);
+			if (liveIndex >= 0) {
+				selectedIndex = liveIndex;
+				selectedCard = this.container.cards[selectedIndex];
+			}
+		}
+		if (!selectedCard)
+			return;
+		this.currentInstanceId = selectedCard.pvpInstanceId ? selectedCard.pvpInstanceId : null;
 		--this.count;
 		if (this.isLastSelection())
 			this.elem.classList.add("hide");
 		if (this.count <= 0)
 			ui.enablePlayer(false);
-		await this.action(this.container, this.indices[this.index]);
+		await this.action(this.container, selectedIndex, selectedCard);
 		if (this.isLastSelection() && !this.cancelled)
 			return this.exit();
 		this.update();
@@ -2145,9 +2474,28 @@ class Carousel {
 	
 	// Updates the visuals of the current selection of cards
 	update(){
+		let currentInstanceId = this.currentInstanceId;
 		this.indices = this.container.cards.reduce((a,c,i)=> (!this.predicate || this.predicate(c)) ? a.concat([i]) : a, []);
+		if (this.bSort)
+			this.indices.sort( (a, b) => Card.compare(this.container.cards[a],this.container.cards[b]) );
+		let matchedCurrent = false;
+		if (currentInstanceId) {
+			let instanceIndex = this.indices.findIndex(i => this.container.cards[i] && this.container.cards[i].pvpInstanceId === currentInstanceId);
+			if (instanceIndex >= 0) {
+				this.index = instanceIndex;
+				matchedCurrent = true;
+			}
+		}
+		if (this.indices.length <= 0) {
+			this.elem.classList.add("hide");
+			return;
+		}
+		if (currentInstanceId && !matchedCurrent)
+			this.index = 0;
 		if (this.index >= this.indices.length)
 			this.index =  this.indices.length-1;
+		if (this.index < 0)
+			this.index = 0;
 		for (let i=0; i<this.previews.length; i++) {
 			let curr = this.index - 2 + i;
 			if (curr >= 0 && curr < this.indices.length) {
@@ -2161,7 +2509,10 @@ class Carousel {
 				this.previews[i].classList.add("noclick");
 			}
 		}
-		ui.setDescription(this.container.cards[this.indices[this.index]], this.desc);
+		let selectedCard = this.container.cards[this.indices[this.index]];
+		this.currentInstanceId = selectedCard && selectedCard.pvpInstanceId ? selectedCard.pvpInstanceId : null;
+		if (selectedCard)
+			ui.setDescription(selectedCard, this.desc);
 	}
 	
 	// Clears and quits the current carousel
@@ -2257,16 +2608,35 @@ class DeckMaker {
 		this.multiplayerService = window.__GWENT_SERVICES__ ? window.__GWENT_SERVICES__.multiplayer : null;
 		this.queueElem = document.getElementById("pvp-status");
 		this.queueStatusElem = document.getElementById("pvp-status-line");
+		this.pvpPassButton = document.getElementById("pvp-pass-turn");
+		this.pvpCancelButton = document.getElementById("cancel-pvp-queue");
 		this.queueActive = false;
 		this.queuePollTimer = null;
+		this.queueRealtimeUnsub = null;
+		this.matchStatePollTimer = null;
+		this.matchRealtimeUnsub = null;
+		this.activeMatchState = null;
+		this.redrawFlowActive = false;
+		this.pvpStartStateKey = null;
+		this.pvpCompletionHandledMatchId = null;
+		this.queueStartedAt = 0;
+		this.pendingPvPCardMove = null;
+		this.pendingPvPChoiceKey = null;
+		this.pvpRoundTransitionActive = false;
+		this.lastProcessedPvPEventSeq = 0;
+		this.pvpEventReplayActive = false;
+		this.pvpSelectorActive = false;
+		this.pvpDeferredState = null;
 		
 		document.getElementById("download-deck").addEventListener("click", () => this.downloadDeck(), false);
 		document.getElementById("play-vs-computer").addEventListener("click", () => this.startVsComputer(), false);
 		document.getElementById("play-vs-player").addEventListener("click", () => this.startVsPlayer(), false);
-		document.getElementById("cancel-pvp-queue").addEventListener("click", () => this.cancelPvPQueue(), false);
+		this.pvpCancelButton.addEventListener("click", () => this.cancelPvPQueue(), false);
+		this.pvpPassButton.addEventListener("click", () => this.sendPvPAction("pass"), false);
 		
 		this.initPlayerProfile();
 		this.update();
+		this.resumeActivePvPSession();
 	}
 
 	initPlayerProfile() {
@@ -2290,6 +2660,72 @@ class DeckMaker {
 
 	async showConfirm(message, title, yesName, noName) {
 		return await this.showModal(title ? title : "Confirm", message, yesName ? yesName : "Yes", noName ? noName : "No");
+	}
+
+	getActiveMatchStorageKey() {
+		return "gwent.pvp.activeMatchId";
+	}
+
+	saveActiveMatchId(matchId) {
+		localStorage.setItem(this.getActiveMatchStorageKey(), matchId);
+	}
+
+	clearActiveMatchId() {
+		localStorage.removeItem(this.getActiveMatchStorageKey());
+	}
+
+	flushDeferredPvPState(){
+		if (!this.pvpDeferredState)
+			return;
+		let deferredState = this.pvpDeferredState;
+		this.pvpDeferredState = null;
+		this.activeMatchState = deferredState;
+		this.renderActiveMatchState(deferredState);
+	}
+
+	async handleCompletedPvPState(state){
+		if (!state || state.status !== "completed" || this.pvpCompletionHandledMatchId === state.matchId)
+			return false;
+		this.pvpCompletionHandledMatchId = state.matchId;
+		this.clearMatchStatePolling();
+		game.clearTurnTimer();
+		let winnerName = "Opponent";
+		if (state.winnerPlayerId === state.self.playerId)
+			winnerName = state.self.displayName;
+		else if (state.opponent && state.winnerPlayerId === state.opponent.playerId)
+			winnerName = state.opponent.displayName;
+		await this.showAlert(winnerName + " wins the match.", "PvP Result");
+		this.endPvPSession();
+		return true;
+	}
+
+	async resumeActivePvPSession() {
+		let matchId = localStorage.getItem(this.getActiveMatchStorageKey());
+		if (!matchId || !this.multiplayerService)
+			return;
+		try {
+			let state = await this.multiplayerService.getMatchState({
+				playerId: this.playerProfile.id,
+				matchId: matchId
+			});
+			game.setMode("pvp");
+			game.activeMatchId = matchId;
+			this.activeMatchState = state;
+			this.queueElem.classList.remove("hide");
+			this.pvpCancelButton.innerHTML = state.status === "completed" ? "Close Session" : state.status === "active" ? "Forfeit Match" : "Leave Match";
+			this.pvpPassButton.classList.toggle("hide", state.status !== "active");
+			this.renderActiveMatchState(state);
+			if (state.status === "active")
+				await this.startActivePvPMatch(state, false);
+			else
+				this.startMatchStatePolling();
+		} catch (e) {
+			this.endPvPSession();
+		}
+	}
+
+	isMissingMatchError(error){
+		return error && error.message && error.message.includes("Match not found");
 	}
 	
 	// Called when client selects a deck faction. Clears previous cards and makes valid cards available.
@@ -2527,8 +2963,17 @@ class DeckMaker {
 		if (!this.multiplayerService) {
 			return await this.showAlert("Multiplayer service layer is not available.", "Multiplayer");
 		}
+		this.clearQueuePolling();
+		this.clearMatchStatePolling();
+		this.activeMatchState = null;
+		this.redrawFlowActive = false;
+		this.pvpStartStateKey = null;
+		this.clearActiveMatchId();
+		game.activeMatchId = null;
+		game.activeMatchBootstrap = null;
 		
 		this.queueActive = true;
+		this.queueStartedAt = Date.now();
 		game.setMode("pvp");
 		this.queueElem.classList.remove("hide");
 		this.queueStatusElem.innerHTML = "Finding opponent for " + this.playerProfile.displayName + "...";
@@ -2558,7 +3003,20 @@ class DeckMaker {
 
 	async cancelPvPQueue(){
 		this.clearQueuePolling();
+		if (this.activeMatchState && this.activeMatchState.status === "completed") {
+			this.endPvPSession();
+			return;
+		}
+		if (this.activeMatchState && this.activeMatchState.status === "matched" && game.activeMatchId) {
+			await this.sendPvPAction("decline_ready");
+			return;
+		}
+		if (game.activeMatchId) {
+			await this.sendPvPAction("forfeit");
+			return;
+		}
 		this.queueActive = false;
+		this.queueStartedAt = 0;
 		this.queueElem.classList.add("hide");
 		this.queueStatusElem.innerHTML = "Not in queue";
 		if (this.multiplayerService)
@@ -2567,6 +3025,26 @@ class DeckMaker {
 
 	startQueuePolling(){
 		this.clearQueuePolling();
+		if (this.multiplayerService && this.multiplayerService.getConfig().realtimeEnabled) {
+			this.queueRealtimeUnsub = this.multiplayerService.subscribeQueueStatus({
+				playerId: this.playerProfile.id,
+				onUpdate: async (result) => {
+					if (!this.queueActive)
+						return;
+					if (result.status === "idle") {
+						this.queueActive = false;
+						this.queueStartedAt = 0;
+						this.queueElem.classList.add("hide");
+						await this.showAlert("Queue expired after 3 minutes. Join again to keep searching.", "Queue Expired");
+						return;
+					}
+					if (result.status === "matched" && result.opponent) {
+						await this.handleMatchedQueue(result);
+					}
+				}
+			});
+			return;
+		}
 		this.queuePollTimer = setInterval(async () => {
 			if (!this.queueActive || !this.multiplayerService)
 				return;
@@ -2574,15 +3052,26 @@ class DeckMaker {
 				let result = await this.multiplayerService.getQueueStatus({playerId: this.playerProfile.id});
 				if (!this.queueActive)
 					return;
+				if (result.status === "idle") {
+					this.queueActive = false;
+					this.queueStartedAt = 0;
+					this.queueElem.classList.add("hide");
+					await this.showAlert("Queue expired after 3 minutes. Join again to keep searching.", "Queue Expired");
+					return;
+				}
 				if (result.status === "matched" && result.opponent) {
 					await this.handleMatchedQueue(result);
 				}
 			} catch (e) {
 			}
-		}, 2000);
+		}, 1000);
 	}
 
 	clearQueuePolling(){
+		if (this.queueRealtimeUnsub) {
+			this.queueRealtimeUnsub();
+			this.queueRealtimeUnsub = null;
+		}
 		if (this.queuePollTimer) {
 			clearInterval(this.queuePollTimer);
 			this.queuePollTimer = null;
@@ -2593,7 +3082,1093 @@ class DeckMaker {
 		this.clearQueuePolling();
 		this.queueActive = false;
 		this.queueStatusElem.innerHTML = "Match found against " + result.opponent.displayName + ".";
-		await this.showAlert("Matched with " + result.opponent.displayName + ". Real-time PvP gameplay sync is the next backend step.", "Opponent Found");
+		try {
+			let bootstrap = await this.multiplayerService.getMatchBootstrap({
+				playerId: this.playerProfile.id,
+				matchId: result.matchId
+			});
+			this.storePvPBootstrap(bootstrap);
+			let ready = await this.showConfirm("Matched with " + bootstrap.opponent.displayName + ". Start when both players are ready?", "Opponent Found", "Ready", "Cancel");
+			if (!ready) {
+				await this.sendPvPAction("decline_ready");
+				return;
+			}
+			await this.sendPvPAction("ready");
+		} catch (e) {
+			await this.showAlert("Matched with " + result.opponent.displayName + ". Match bootstrap is not available right now.", "Opponent Found");
+		}
+	}
+
+	storePvPBootstrap(bootstrap){
+		game.activeMatchId = bootstrap.matchId;
+		game.activeMatchBootstrap = bootstrap;
+		this.activeMatchState = bootstrap;
+		this.pendingPvPCardMove = null;
+		this.lastProcessedPvPEventSeq = bootstrap.eventLog && bootstrap.eventLog.length > 0 ? bootstrap.eventLog[bootstrap.eventLog.length - 1].seq : 0;
+		this.pvpCompletionHandledMatchId = null;
+		this.saveActiveMatchId(bootstrap.matchId);
+		this.queueElem.classList.remove("hide");
+		this.pvpPassButton.classList.toggle("hide", bootstrap.status !== "active");
+		this.pvpCancelButton.innerHTML = bootstrap.status === "active" ? "Forfeit Match" : "Leave Match";
+		this.renderActiveMatchState(bootstrap);
+		this.startMatchStatePolling();
+	}
+
+	async startActivePvPMatch(state, announce = true){
+		let stateKey = state.matchId + ":" + state.gameState.phase + ":" + state.turnNumber + ":" + state.self.redrawComplete;
+		if (this.pvpStartStateKey === stateKey)
+			return;
+		this.pvpStartStateKey = stateKey;
+		game.deferPvPTimer = announce && state.gameState.phase === "active";
+		this.queueElem.classList.add("hide");
+		game.enterPvPMatch(state);
+		this.lastProcessedPvPEventSeq = state.eventLog && state.eventLog.length > 0 ? state.eventLog[state.eventLog.length - 1].seq : this.lastProcessedPvPEventSeq;
+		ui.enablePlayer(true);
+		if (state.gameState.phase === "redraw") {
+			if (announce)
+				await game.announcePvPCoin(state);
+			await this.runPvPRedrawFlow(state);
+			return;
+		}
+		if (announce)
+			await game.announcePvPStart(state);
+		game.deferPvPTimer = false;
+		game.applyPvPState(state);
+		this.pvpPassButton.classList.remove("hide");
+		this.pvpCancelButton.innerHTML = "Forfeit Match";
+	}
+
+	async runPvPRedrawFlow(state){
+		if (this.redrawFlowActive || state.self.redrawComplete)
+			return;
+		this.redrawFlowActive = true;
+		this.pvpPassButton.classList.add("hide");
+		this.pvpCancelButton.innerHTML = "Forfeit Match";
+		try {
+			let latestState = state;
+			game.applyPvPState(latestState);
+			if (latestState.self.redrawRemaining > 0) {
+				this.pvpSelectorActive = true;
+				await ui.queueCarousel(
+					player_me.hand,
+					latestState.self.redrawRemaining,
+					async (_container, _index, selectedCard) => {
+						let selectedCardInstanceId = selectedCard && selectedCard.pvpInstanceId ? selectedCard.pvpInstanceId : "";
+						if (!selectedCardInstanceId)
+							return;
+						latestState = await this.multiplayerService.sendMatchAction({
+							playerId: this.playerProfile.id,
+							matchId: game.activeMatchId,
+							action: "redraw_card",
+							cardInstanceId: selectedCardInstanceId
+						});
+						this.pvpDeferredState = null;
+						this.activeMatchState = latestState;
+						game.applyPvPState(latestState);
+					},
+					() => true,
+					true,
+					true,
+					"Choose up to 2 cards to redraw."
+				);
+				this.pvpSelectorActive = false;
+			}
+			if (latestState.gameState && latestState.gameState.phase === "redraw" && !latestState.self.redrawComplete) {
+				try {
+					latestState = await this.multiplayerService.sendMatchAction({
+						playerId: this.playerProfile.id,
+						matchId: game.activeMatchId,
+						action: "finish_redraw"
+					});
+				} catch (e) {
+					if (e && e.message && e.message.includes("Redraw phase is not active")) {
+						latestState = await this.multiplayerService.getMatchState({
+							playerId: this.playerProfile.id,
+							matchId: game.activeMatchId
+						});
+					} else
+						throw e;
+				}
+			}
+			this.activeMatchState = latestState;
+			this.renderActiveMatchState(latestState);
+			if (latestState.gameState.phase === "active") {
+				game.lastPvPStartMatchId = null;
+				game.lastPvPTurnNoticeKey = null;
+				game.deferPvPTimer = true;
+				await this.startActivePvPMatch(latestState);
+			}
+		} catch (e) {
+			this.pvpSelectorActive = false;
+			await this.showAlert(e.message ? e.message : "Unable to complete PvP redraw.", "PvP");
+		} finally {
+			this.pvpSelectorActive = false;
+			this.flushDeferredPvPState();
+			this.redrawFlowActive = false;
+		}
+	}
+
+	startMatchStatePolling(){
+		this.clearMatchStatePolling();
+		if (this.multiplayerService && this.multiplayerService.getConfig().realtimeEnabled) {
+			this.matchRealtimeUnsub = this.multiplayerService.subscribeMatchState({
+				playerId: this.playerProfile.id,
+				matchId: game.activeMatchId,
+				onUpdate: async (state) => {
+					if (this.pvpSelectorActive) {
+						this.activeMatchState = state;
+						this.pvpDeferredState = state;
+						return;
+					}
+					if (this.isPendingPvPCardState(state))
+						return;
+					if (this.pendingPvPCardMove)
+						this.pendingPvPCardMove = null;
+					this.activeMatchState = state;
+					this.renderActiveMatchState(state);
+					if (await this.handleCompletedPvPState(state))
+						return;
+				}
+			});
+			return;
+		}
+		this.matchStatePollTimer = setInterval(async () => {
+			if (!game.activeMatchId || !this.multiplayerService)
+				return;
+			try {
+				let state = await this.multiplayerService.getMatchState({
+					playerId: this.playerProfile.id,
+					matchId: game.activeMatchId
+				});
+				if (this.pvpSelectorActive) {
+					this.activeMatchState = state;
+					this.pvpDeferredState = state;
+					return;
+				}
+				if (this.isPendingPvPCardState(state))
+					return;
+				if (this.pendingPvPCardMove)
+					this.pendingPvPCardMove = null;
+				this.activeMatchState = state;
+				this.renderActiveMatchState(state);
+				if (await this.handleCompletedPvPState(state))
+					return;
+			} catch (e) {
+				if (this.isMissingMatchError(e))
+					this.endPvPSession();
+			}
+		}, 1000);
+	}
+
+	clearMatchStatePolling(){
+		if (this.matchRealtimeUnsub) {
+			this.matchRealtimeUnsub();
+			this.matchRealtimeUnsub = null;
+		}
+		if (this.matchStatePollTimer) {
+			clearInterval(this.matchStatePollTimer);
+			this.matchStatePollTimer = null;
+		}
+	}
+
+	async runPvPRoundEndFlow(state, roundEvent){
+		if (this.pvpRoundTransitionActive)
+			return;
+		this.pvpRoundTransitionActive = true;
+		game.clearTurnTimer();
+		board.row.forEach(row => row.clear());
+		weather.clearWeather();
+		player_me.endRound(roundEvent.winnerPlayerId === state.self.playerId);
+		player_op.endRound(state.opponent && roundEvent.winnerPlayerId === state.opponent.playerId);
+		if (roundEvent.winnerPlayerId === state.self.playerId)
+			await ui.notification("win-round", 1200);
+		else if (!roundEvent.winnerPlayerId)
+			await ui.notification("draw-round", 1200);
+		else
+			await ui.notification("lose-round", 1200);
+		let northDrawEvent = state.eventLog && state.eventLog.length > 0
+			? [...state.eventLog].reverse().find(event => event.type === "cards_drawn" && event.reason === "north" && event.round === state.round)
+			: null;
+		if (northDrawEvent) {
+			if (northDrawEvent.playerId === state.self.playerId && northDrawEvent.cardInstanceIds && northDrawEvent.cardInstanceIds.length > 0)
+				await this.animatePvPDraw(state, northDrawEvent.cardInstanceIds);
+			await ui.notification("north", 1200);
+		}
+		let monstersKeepEvent = state.eventLog && state.eventLog.length > 0
+			? [...state.eventLog].reverse().find(event => event.type === "card_kept" && event.reason === "monsters" && event.round === state.round)
+			: null;
+		if (monstersKeepEvent)
+			await ui.notification("monsters", 1200);
+		let skelligeReviveEvents = state.eventLog && state.eventLog.length > 0
+			? state.eventLog.filter(event => event.type === "card_revived" && event.reason === "skellige" && event.round === state.round)
+			: [];
+		if (skelligeReviveEvents.length > 0) {
+			if (skelligeReviveEvents.some(event => event.playerId === state.self.playerId))
+				await ui.notification("skellige-me", 1200);
+			if (state.opponent && skelligeReviveEvents.some(event => event.playerId === state.opponent.playerId))
+				await ui.notification("skellige-op", 1200);
+			for (let event of skelligeReviveEvents)
+				await this.replayPvPCardRevivedEvent(state, event);
+		}
+		let latestRoundStartEvent = state.eventLog && state.eventLog.length > 0
+			? [...state.eventLog].reverse().find(event => event.type === "round_started" && event.round === state.round)
+			: null;
+		let roundStartKey = latestRoundStartEvent ? String(latestRoundStartEvent.seq) : null;
+		if (state.status === "active" && latestRoundStartEvent && this.lastPvPRoundStartKey !== roundStartKey) {
+			this.lastPvPRoundStartKey = roundStartKey;
+			game.deferPvPTimer = true;
+			game.lastPvPTurnNoticeKey = null;
+			game.applyPvPState(state);
+			await ui.notification("round-start", 1200);
+			await ui.notification(state.currentTurnPlayerId === state.self.playerId ? "me-turn" : "op-turn", 1200);
+			game.deferPvPTimer = false;
+		}
+		this.pvpRoundTransitionActive = false;
+		if (state.eventLog && state.eventLog.length > 0)
+			this.lastProcessedPvPEventSeq = state.eventLog[state.eventLog.length - 1].seq;
+		game.applyPvPState(state);
+	}
+
+	findPvPCardInContainer(container, cardInstanceId){
+		if (!container || !cardInstanceId || !container.cards)
+			return null;
+		return container.cards.find(card => card && card.pvpInstanceId === cardInstanceId) || null;
+	}
+
+	removePvPCardFromContainer(container, card){
+		if (!container || !card)
+			return null;
+		if (card.pvpInstanceId) {
+			let liveCard = this.findPvPCardInContainer(container, card.pvpInstanceId);
+			if (liveCard)
+				return container.removeCard(liveCard);
+		}
+		return container.removeCard(card);
+	}
+
+	createPvPReplayCard(cardId, owner, cardInstanceId = null){
+		let cardData = card_dict[cardId];
+		if (!cardData)
+			return null;
+		let card = new Card(cardData, owner);
+		card.pvpInstanceId = cardInstanceId ? cardInstanceId : null;
+		return card;
+	}
+
+	createSortedPvPChoiceContainer(entries, owner, decorateCard = null){
+		let container = new CardContainer();
+		container.cards = entries.map((entry) => {
+			let card = new Card(card_dict[entry.cardId], owner);
+			card.pvpInstanceId = entry.instanceId;
+			if (decorateCard)
+				decorateCard(card, entry);
+			return card;
+		}).sort((a, b) => Card.compare(a, b));
+		return container;
+	}
+
+	async replayPvPCardPlayedEvent(state, event){
+		if (!event || event.type !== "card_played" || !state.opponent)
+			return;
+		if (event.playerId === state.self.playerId && !event.autoPlayed)
+			return;
+		let owner = event.playerId === state.self.playerId ? player_me : player_op;
+		let source = event.from === "deck"
+			? owner.deck
+			: event.from === "spawn" || event.from === "leader"
+				? null
+			: owner === player_me ? player_me.hand : player_op.hand;
+		let liveCard = source ? this.findPvPCardInContainer(source, event.cardInstanceId) : null;
+		let replayCard = liveCard ? liveCard : this.createPvPReplayCard(event.cardId, owner, event.cardInstanceId);
+		if (!replayCard)
+			return;
+		try {
+			if (event.from === "spawn" || event.from === "leader")
+				await this.addPvPVisualCardToRow(replayCard, event.to, owner);
+			else if (event.to === "weather")
+				await (liveCard ? board.moveTo(replayCard, weather, source) : board.toWeather(replayCard, source));
+			else
+				await this.addPvPVisualCardToRow(replayCard, event.to, owner, source);
+			replayCard.elem.classList.add("noclick");
+			await sleep(150);
+		} catch (_ignored) {
+		}
+	}
+
+	async replayPvPCardRevivedEvent(state, event){
+		if (!event || event.type !== "card_revived")
+			return;
+		let sourceOwner = event.sourcePlayerId === state.self.playerId ? player_me : player_op;
+		let owner = event.owner === "opponent"
+			? (event.playerId === state.self.playerId ? player_op : player_me)
+			: (event.playerId === state.self.playerId ? player_me : player_op);
+		if (!owner || !sourceOwner)
+			return;
+		let replayCard = this.findPvPCardInContainer(sourceOwner.grave, event.cardInstanceId) || this.createPvPReplayCard(event.cardId, owner, event.cardInstanceId);
+		if (!replayCard)
+			return;
+		let source = sourceOwner.grave;
+		try {
+			await this.addPvPVisualCardToRow(replayCard, event.to, owner, source);
+			replayCard.elem.classList.add("noclick");
+			await sleep(150);
+		} catch (_ignored) {
+		}
+	}
+
+	async replayPvPCardBurnedEvent(state, event){
+		if (!event || event.type !== "card_burned")
+			return;
+		let owner = event.playerId === state.self.playerId ? player_me : player_op;
+		if (!owner)
+			return;
+		let refCard = this.createPvPReplayCard(event.cardId, owner, event.cardInstanceId);
+		if (!refCard)
+			return;
+		let source = board.getRow(refCard, event.from, owner);
+		if (!source)
+			return;
+		let replayCard = this.findPvPCardInContainer(source, event.cardInstanceId);
+		if (!replayCard)
+			return;
+		try {
+			await replayCard.animate("scorch", true, false);
+			await board.moveTo(replayCard, "grave", source);
+			await sleep(150);
+		} catch (_ignored) {
+		}
+	}
+
+	async replayPvPCardReturnedEvent(state, event){
+		if (!event || event.type !== "card_returned")
+			return;
+		let sourceOwner = event.sourcePlayerId === state.self.playerId ? player_me : player_op;
+		let targetOwner = event.targetPlayerId === state.self.playerId ? player_me : player_op;
+		if (!sourceOwner || !targetOwner)
+			return;
+		let refCard = this.createPvPReplayCard(event.cardId, targetOwner, event.cardInstanceId);
+		if (!refCard)
+			return;
+		let source = event.from === "grave" ? sourceOwner.grave : event.from === "hand" ? sourceOwner.hand : event.from === "deck" ? sourceOwner.deck : board.getRow(refCard, event.from, sourceOwner);
+		let replayCard = this.findPvPCardInContainer(source, event.cardInstanceId);
+		if (!replayCard)
+			return;
+		try {
+			if (event.to === "deck")
+				await board.toDeck(replayCard, source);
+			else if (event.to === "grave")
+				await board.toGrave(replayCard, source);
+			else
+				await board.toHand(replayCard, source);
+			replayCard.elem.classList.add("noclick");
+			await sleep(150);
+		} catch (_ignored) {
+		}
+	}
+
+	async replayPvPCardMovedEvent(state, event){
+		if (!event || event.type !== "card_moved")
+			return;
+		let owner = event.playerId === state.self.playerId ? player_me : player_op;
+		if (!owner)
+			return;
+		let refCard = this.createPvPReplayCard(event.cardId, owner, event.cardInstanceId);
+		if (!refCard)
+			return;
+		let source = board.getRow(refCard, event.from, owner);
+		if (!source)
+			return;
+		let replayCard = this.findPvPCardInContainer(source, event.cardInstanceId);
+		if (!replayCard)
+			return;
+		try {
+			await board.moveTo(replayCard, event.to, source);
+			replayCard.elem.classList.add("noclick");
+			await sleep(150);
+		} catch (_ignored) {
+		}
+	}
+
+	async replayPvPEvent(state, event){
+		if (!event)
+			return;
+		if (event.type === "card_played")
+			return this.replayPvPCardPlayedEvent(state, event);
+		if (event.type === "card_revived")
+			return this.replayPvPCardRevivedEvent(state, event);
+		if (event.type === "card_burned")
+			return this.replayPvPCardBurnedEvent(state, event);
+		if (event.type === "card_returned")
+			return this.replayPvPCardReturnedEvent(state, event);
+		if (event.type === "card_moved")
+			return this.replayPvPCardMovedEvent(state, event);
+		if (event.type === "cards_drawn" && event.playerId === state.self.playerId && event.cardInstanceIds && event.cardInstanceIds.length > 0)
+			return this.animatePvPDraw(state, event.cardInstanceIds);
+	}
+
+	isReplayablePvPEvent(state, event){
+		if (!event)
+			return false;
+		if (event.type === "card_played")
+			return event.playerId !== state.self.playerId || !!event.autoPlayed;
+		if (event.type === "card_revived")
+			return true;
+		if (event.type === "card_burned")
+			return true;
+		if (event.type === "card_returned")
+			return true;
+		if (event.type === "card_moved")
+			return true;
+		if (event.type === "cards_drawn")
+			return event.playerId === state.self.playerId && Array.isArray(event.cardInstanceIds) && event.cardInstanceIds.length > 0;
+		return false;
+	}
+
+	async replayPvPEvents(state, events){
+		for (let event of events)
+			await this.replayPvPEvent(state, event);
+	}
+
+	renderActiveMatchState(state){
+		if (this.pvpEventReplayActive) {
+			this.activeMatchState = state;
+			return;
+		}
+		let turnLabel = state.currentTurnPlayerId === state.self.playerId ? "Your turn" : state.opponent ? state.opponent.displayName + "'s turn" : "Waiting";
+		let passedLabel = "You: " + (state.self.passed ? "Passed" : "Active");
+		if (state.opponent)
+			passedLabel += " | Opponent: " + (state.opponent.passed ? "Passed" : "Active");
+		let counts = "Hand " + state.self.handCount + "/" + (state.opponent ? state.opponent.handCount : 0) + " | Deck " + state.self.deckCount + "/" + (state.opponent ? state.opponent.deckCount : 0) + " | Total " + state.self.total + "/" + (state.opponent ? state.opponent.total : 0);
+		let summary = "Round " + state.round + " | " + turnLabel + " | " + passedLabel + " | " + counts;
+		if (state.status === "matched")
+			summary = state.self.ready ? "Waiting for " + (state.opponent ? state.opponent.displayName : "opponent") + " to get ready..." : "Opponent found. Confirm when you are ready.";
+		if (state.status === "active" && state.gameState.pendingChoice && state.gameState.pendingChoice.type === "scoiatael_first_turn")
+			summary = state.self.playerId === state.gameState.pendingChoice.playerId ? "Scoia'tael perk: choose who goes first." : "Waiting for " + (state.opponent ? state.opponent.displayName : "opponent") + " to choose who goes first.";
+		if (state.status === "active" && state.gameState.phase === "redraw")
+			summary = state.self.redrawComplete ? "Waiting for " + (state.opponent ? state.opponent.displayName : "opponent") + " to finish redraw..." : "Choose up to " + state.self.redrawRemaining + " cards to redraw.";
+		if (state.status === "active" && state.gameState.pendingChoice && state.gameState.pendingChoice.type === "leader_weather_deck")
+			summary = "Choose one weather card from your deck.";
+		if (state.status === "active" && state.gameState.pendingChoice && state.gameState.pendingChoice.type === "leader_hand_reveal")
+			summary = "Review the revealed cards, then continue.";
+		if (state.status === "active" && state.gameState.pendingChoice && state.gameState.pendingChoice.type === "leader_discard_hand")
+			summary = "Choose " + state.gameState.pendingChoice.remainingCount + " card" + (state.gameState.pendingChoice.remainingCount === 1 ? "" : "s") + " to discard.";
+		if (state.status === "active" && state.gameState.pendingChoice && state.gameState.pendingChoice.type === "leader_deck_to_hand")
+			summary = "Choose one card from your deck to draw.";
+		if (state.status === "active" && state.gameState.pendingChoice && state.gameState.pendingChoice.type === "leader_grave_to_hand")
+			summary = state.gameState.pendingChoice.sourcePlayerId === state.self.playerId
+				? "Choose one unit from your graveyard to return to your hand."
+				: "Choose one unit from your opponent's graveyard to return to your hand.";
+		if (state.status === "active" && state.gameState.pendingChoice && state.gameState.pendingChoice.type === "medic")
+			summary = "Choose one card from your graveyard to play.";
+		if (state.status === "active" && state.gameState.pendingChoice && state.gameState.pendingChoice.type === "decoy")
+			summary = "Choose one unit on your side to swap with Decoy.";
+		if (state.status === "completed") {
+			let won = state.winnerPlayerId === state.self.playerId;
+			summary = state.winnerPlayerId === null ? "Match drawn." : won ? "Match won." : "Match lost.";
+			this.pvpPassButton.classList.add("hide");
+			this.pvpCancelButton.innerHTML = "Close Session";
+		}
+		this.queueStatusElem.innerHTML = summary;
+		if (state.status === "active" && state.gameState.phase !== "choice" && !game.pvpBoardEntered)
+			this.startActivePvPMatch(state);
+		else if (state.status === "active"
+			&& state.gameState.phase === "active"
+			&& game.mode === "pvp"
+			&& game.pvpBoardEntered
+			&& (!game.lastPvPStartMatchId || !game.lastPvPStartMatchId.startsWith(state.matchId + ":"))) {
+			game.deferPvPTimer = true;
+			game.lastPvPTurnNoticeKey = null;
+			this.startActivePvPMatch(state);
+			return;
+		}
+		let lastRoundEvent = state.eventLog && state.eventLog.length > 0 ? [...state.eventLog].reverse().find(event => event.type === "round_ended") : null;
+		let roundNoticeKey = lastRoundEvent ? String(lastRoundEvent.seq) : null;
+		if (roundNoticeKey && this.lastPvPRoundNoticeKey !== roundNoticeKey && game.mode === "pvp" && game.pvpBoardEntered) {
+			this.lastPvPRoundNoticeKey = roundNoticeKey;
+			this.runPvPRoundEndFlow(state, lastRoundEvent);
+			return;
+		}
+		let newEvents = state.eventLog && state.eventLog.length > 0
+			? state.eventLog.filter(event => event.seq > this.lastProcessedPvPEventSeq)
+			: [];
+		let replayableEvents = game.mode === "pvp" && game.pvpBoardEntered && !this.pvpRoundTransitionActive
+			? newEvents.filter(event => this.isReplayablePvPEvent(state, event))
+			: [];
+		if (replayableEvents.length > 0) {
+			this.lastProcessedPvPEventSeq = newEvents[newEvents.length - 1].seq;
+			this.pvpEventReplayActive = true;
+			this.replayPvPEvents(state, replayableEvents).then(() => {
+				this.pvpEventReplayActive = false;
+				let latestState = this.activeMatchState || state;
+				if (game.mode === "pvp")
+					game.applyPvPState(latestState);
+			}).catch(() => {
+				this.pvpEventReplayActive = false;
+				let latestState = this.activeMatchState || state;
+				if (game.mode === "pvp")
+					game.applyPvPState(latestState);
+			});
+			return;
+		}
+		if (newEvents.length > 0)
+			this.lastProcessedPvPEventSeq = newEvents[newEvents.length - 1].seq;
+		if (game.mode === "pvp")
+			game.applyPvPState(state);
+		if (state.status === "active" && state.gameState && state.gameState.pendingChoice && state.gameState.pendingChoice.type === "scoiatael_first_turn")
+			this.runPvPScoiataelChoiceFlow(state);
+		if (state.status === "active" && state.gameState && state.gameState.pendingChoice && state.gameState.pendingChoice.type === "leader_weather_deck")
+			this.runPvPLeaderWeatherChoiceFlow(state);
+		if (state.status === "active" && state.gameState && state.gameState.pendingChoice && state.gameState.pendingChoice.type === "leader_hand_reveal")
+			this.runPvPLeaderHandRevealFlow(state);
+		if (state.status === "active" && state.gameState && state.gameState.pendingChoice && state.gameState.pendingChoice.type === "leader_discard_hand")
+			this.runPvPLeaderDiscardChoiceFlow(state);
+		if (state.status === "active" && state.gameState && state.gameState.pendingChoice && state.gameState.pendingChoice.type === "leader_deck_to_hand")
+			this.runPvPLeaderDeckToHandChoiceFlow(state);
+		if (state.status === "active" && state.gameState && state.gameState.pendingChoice && state.gameState.pendingChoice.type === "leader_grave_to_hand")
+			this.runPvPLeaderGraveChoiceFlow(state);
+		if (state.status === "active" && state.gameState && state.gameState.pendingChoice && state.gameState.pendingChoice.type === "medic")
+			this.runPvPMedicChoiceFlow(state);
+		if (state.status === "active" && state.gameState && state.gameState.pendingChoice && state.gameState.pendingChoice.type === "decoy")
+			this.runPvPDecoyChoiceFlow(state);
+	}
+
+	getPvPCardData(cardId){
+		return card_dict[cardId];
+	}
+
+	getPvPCardAbilities(cardId){
+		let card = this.getPvPCardData(cardId);
+		if (!card || !card.ability)
+			return [];
+		return card.ability.trim() === "" ? [] : card.ability.trim().split(" ");
+	}
+
+	calculatePvPCardStrength(cardId, activeWeather){
+		let card = this.getPvPCardData(cardId);
+		if (!card)
+			return 0;
+		let baseStrength = Number(card.strength) || 0;
+		let abilities = this.getPvPCardAbilities(cardId);
+		if (abilities.includes("hero"))
+			return baseStrength;
+		let weatherByRow = {close: "frost", ranged: "fog", siege: "rain"};
+		if (weatherByRow[card.row] && activeWeather.has(weatherByRow[card.row]))
+			return Math.min(1, baseStrength);
+		return baseStrength;
+	}
+
+	async animatePvPDraw(state, cardInstanceIds){
+		if (!state || !state.self || !Array.isArray(cardInstanceIds) || !player_me || !player_me.deck || !player_me.hand)
+			return;
+		for (let cardInstanceId of cardInstanceIds) {
+			let handEntry = state.self.hand.find(entry => entry.instanceId === cardInstanceId);
+			if (!handEntry)
+				continue;
+			let cardData = this.getPvPCardData(handEntry.cardId);
+			if (!cardData)
+				continue;
+			let tempCard = new Card(cardData, player_me);
+			tempCard.pvpInstanceId = handEntry.instanceId;
+			try {
+				await translateTo(tempCard, player_me.deck, player_me.hand);
+			} catch (_ignored) {
+			}
+			if (tempCard.elem && tempCard.elem.parentElement)
+				tempCard.elem.parentElement.removeChild(tempCard.elem);
+			await sleep(120);
+		}
+	}
+
+	async addPvPVisualCardToRow(card, rowName, owner, source = null){
+		if (!card || !owner)
+			return;
+		let row = board.getRow(card, rowName, owner);
+		if (!row)
+			return;
+		try {
+			await translateTo(card, source, row);
+		} catch (_ignored) {
+		}
+		let movedCard = source ? this.removePvPCardFromContainer(source, card) : card;
+		if (!movedCard)
+			return;
+		if (movedCard.isSpecial()) {
+			row.special = movedCard;
+			row.elem_special.appendChild(movedCard.elem);
+		} else {
+			let index = row.addCardSorted(movedCard);
+			row.addCardElement(movedCard, index);
+			row.resize();
+		}
+		row.updateState(movedCard, true);
+		if (movedCard.abilities.includes("spy"))
+			await movedCard.animate("spy");
+		if (movedCard.abilities.includes("morale"))
+			await movedCard.animate("morale");
+		if (movedCard.abilities.includes("horn"))
+			await movedCard.animate("horn");
+		if (movedCard.abilities.includes("bond")) {
+			let bonds = row.findCards(c => c.name === movedCard.name);
+			if (bonds.length > 1)
+				await Promise.all(bonds.map(c => c.animate("bond")));
+		}
+		movedCard.elem.classList.add("noclick");
+		row.updateScore();
+	}
+
+	async animateLocalPvPCardPlay(card, rowName){
+		if (!card || !player_me)
+			return;
+		if (card.faction === "weather") {
+			await board.moveTo(card, weather, player_me.hand);
+			return;
+		}
+		if (card.abilities.includes("spy")) {
+			await this.addPvPVisualCardToRow(card, rowName ? rowName : card.row, player_me, player_me.hand);
+			return;
+		}
+		await this.addPvPVisualCardToRow(card, rowName ? rowName : card.row, player_me, player_me.hand);
+	}
+
+	async runPvPMedicChoiceFlow(state){
+		let choice = state.gameState.pendingChoice;
+		if (!choice || choice.type !== "medic" || !choice.options || choice.options.length === 0)
+			return;
+		let choiceKey = state.matchId + ":" + state.turnNumber + ":" + choice.type + ":" + choice.options.map(option => option.instanceId).join(",");
+		if (this.pendingPvPChoiceKey === choiceKey)
+			return;
+		this.pendingPvPChoiceKey = choiceKey;
+		let container = this.createSortedPvPChoiceContainer(choice.options, player_me);
+		try {
+			this.pvpSelectorActive = true;
+			await ui.queueCarousel(
+				container,
+				1,
+				async (_graveContainer, _index, selectedCard) => {
+					let card = selectedCard;
+					let nextState = await this.multiplayerService.sendMatchAction({
+						playerId: this.playerProfile.id,
+						matchId: game.activeMatchId,
+						action: "resolve_choice",
+						selectedCardInstanceId: card && card.pvpInstanceId ? card.pvpInstanceId : ""
+					});
+					this.activeMatchState = nextState;
+					this.pendingPvPChoiceKey = null;
+					this.renderActiveMatchState(nextState);
+				},
+				() => true,
+				false,
+				false,
+				"Choose one card from your graveyard to play."
+			);
+			this.pvpSelectorActive = false;
+			this.flushDeferredPvPState();
+		} catch (e) {
+			this.pvpSelectorActive = false;
+			this.flushDeferredPvPState();
+			this.pendingPvPChoiceKey = null;
+			await this.showAlert(e.message ? e.message : "Unable to resolve medic choice.", "PvP");
+		}
+	}
+
+	async runPvPDecoyChoiceFlow(state){
+		let choice = state.gameState.pendingChoice;
+		if (!choice || choice.type !== "decoy" || !choice.options || choice.options.length === 0)
+			return;
+		let choiceKey = state.matchId + ":" + state.turnNumber + ":" + choice.type + ":" + choice.options.map(option => option.instanceId).join(",");
+		if (this.pendingPvPChoiceKey === choiceKey)
+			return;
+		this.pendingPvPChoiceKey = choiceKey;
+		let container = this.createSortedPvPChoiceContainer(choice.options, player_me, (card, entry) => {
+			card.pvpRowName = entry.rowName || null;
+		});
+		try {
+			this.pvpSelectorActive = true;
+			await ui.queueCarousel(
+				container,
+				1,
+				async (_rowContainer, _index, selectedCard) => {
+					let card = selectedCard;
+					let nextState = await this.multiplayerService.sendMatchAction({
+						playerId: this.playerProfile.id,
+						matchId: game.activeMatchId,
+						action: "resolve_choice",
+						selectedCardInstanceId: card && card.pvpInstanceId ? card.pvpInstanceId : ""
+					});
+					this.activeMatchState = nextState;
+					this.pendingPvPChoiceKey = null;
+					this.renderActiveMatchState(nextState);
+				},
+				() => true,
+				false,
+				false,
+				"Choose one unit on your side to swap with Decoy."
+			);
+			this.pvpSelectorActive = false;
+			this.flushDeferredPvPState();
+		} catch (e) {
+			this.pvpSelectorActive = false;
+			this.flushDeferredPvPState();
+			this.pendingPvPChoiceKey = null;
+			await this.showAlert(e.message ? e.message : "Unable to resolve decoy choice.", "PvP");
+		}
+	}
+
+	async runPvPScoiataelChoiceFlow(state){
+		let choice = state.gameState.pendingChoice;
+		if (!choice || choice.type !== "scoiatael_first_turn" || choice.playerId !== state.self.playerId)
+			return;
+		let choiceKey = state.matchId + ":" + state.turnNumber + ":" + choice.type;
+		if (this.pendingPvPChoiceKey === choiceKey)
+			return;
+		this.pendingPvPChoiceKey = choiceKey;
+		try {
+			let goFirst = await this.showConfirm(
+				"The Scoia'tael faction perk allows you to decide who will get to go first.",
+				"Scoia'tael",
+				"Go First",
+				"Let Opponent Start"
+			);
+			let nextState = await this.multiplayerService.sendMatchAction({
+				playerId: this.playerProfile.id,
+				matchId: game.activeMatchId,
+				action: "resolve_choice",
+				goFirst
+			});
+			this.activeMatchState = nextState;
+			this.pendingPvPChoiceKey = null;
+			this.renderActiveMatchState(nextState);
+		} catch (e) {
+			this.pendingPvPChoiceKey = null;
+			await this.showAlert(e.message ? e.message : "Unable to resolve Scoia'tael choice.", "PvP");
+		}
+	}
+
+	async runPvPLeaderWeatherChoiceFlow(state){
+		let choice = state.gameState.pendingChoice;
+		if (!choice || choice.type !== "leader_weather_deck" || !choice.options || choice.options.length === 0)
+			return;
+		let choiceKey = state.matchId + ":" + state.turnNumber + ":" + choice.type + ":" + choice.options.map(option => option.instanceId).join(",");
+		if (this.pendingPvPChoiceKey === choiceKey)
+			return;
+		this.pendingPvPChoiceKey = choiceKey;
+		let container = this.createSortedPvPChoiceContainer(choice.options, player_me);
+		try {
+			this.pvpSelectorActive = true;
+			await ui.queueCarousel(
+				container,
+				1,
+				async (_deckContainer, _index, selectedCard) => {
+					let card = selectedCard;
+					let nextState = await this.multiplayerService.sendMatchAction({
+						playerId: this.playerProfile.id,
+						matchId: game.activeMatchId,
+						action: "resolve_choice",
+						selectedCardInstanceId: card && card.pvpInstanceId ? card.pvpInstanceId : ""
+					});
+					this.activeMatchState = nextState;
+					this.pendingPvPChoiceKey = null;
+					this.renderActiveMatchState(nextState);
+				},
+				() => true,
+				false,
+				false,
+				"Choose one weather card from your deck."
+			);
+			this.pvpSelectorActive = false;
+			this.flushDeferredPvPState();
+		} catch (e) {
+			this.pvpSelectorActive = false;
+			this.flushDeferredPvPState();
+			this.pendingPvPChoiceKey = null;
+			await this.showAlert(e.message ? e.message : "Unable to resolve leader deck choice.", "PvP");
+		}
+	}
+
+	async runPvPLeaderHandRevealFlow(state){
+		let choice = state.gameState.pendingChoice;
+		if (!choice || choice.type !== "leader_hand_reveal" || !choice.options || choice.options.length === 0)
+			return;
+		let choiceKey = state.matchId + ":" + state.turnNumber + ":" + choice.type + ":" + choice.options.map(option => option.instanceId).join(",");
+		if (this.pendingPvPChoiceKey === choiceKey)
+			return;
+		this.pendingPvPChoiceKey = choiceKey;
+		let owner = choice.sourcePlayerId === state.self.playerId ? player_me : player_op;
+		let container = this.createSortedPvPChoiceContainer(choice.options, owner);
+		try {
+			this.pvpSelectorActive = true;
+			await ui.viewCardsInContainer(container);
+			this.pvpSelectorActive = false;
+			let nextState = await this.multiplayerService.sendMatchAction({
+				playerId: this.playerProfile.id,
+				matchId: game.activeMatchId,
+				action: "resolve_choice"
+			});
+			this.activeMatchState = nextState;
+			this.pendingPvPChoiceKey = null;
+			this.renderActiveMatchState(nextState);
+		} catch (e) {
+			this.pvpSelectorActive = false;
+			this.flushDeferredPvPState();
+			this.pendingPvPChoiceKey = null;
+			await this.showAlert(e.message ? e.message : "Unable to resolve leader reveal.", "PvP");
+		}
+	}
+
+	async runPvPLeaderDiscardChoiceFlow(state){
+		let choice = state.gameState.pendingChoice;
+		if (!choice || choice.type !== "leader_discard_hand" || !choice.options || choice.options.length === 0)
+			return;
+		let choiceKey = state.matchId + ":" + state.turnNumber + ":" + choice.type + ":" + (choice.remainingCount || 0) + ":" + choice.options.map(option => option.instanceId).join(",");
+		if (this.pendingPvPChoiceKey === choiceKey)
+			return;
+		this.pendingPvPChoiceKey = choiceKey;
+		let container = this.createSortedPvPChoiceContainer(choice.options, player_me);
+		try {
+			this.pvpSelectorActive = true;
+			await ui.queueCarousel(
+				container,
+				1,
+				async (_handContainer, _index, selectedCard) => {
+					let card = selectedCard;
+					let nextState = await this.multiplayerService.sendMatchAction({
+						playerId: this.playerProfile.id,
+						matchId: game.activeMatchId,
+						action: "resolve_choice",
+						selectedCardInstanceId: card && card.pvpInstanceId ? card.pvpInstanceId : ""
+					});
+					this.activeMatchState = nextState;
+					this.pendingPvPChoiceKey = null;
+					this.renderActiveMatchState(nextState);
+				},
+				() => true,
+				false,
+				false,
+				"Choose " + choice.remainingCount + " card" + (choice.remainingCount === 1 ? "" : "s") + " to discard."
+			);
+			this.pvpSelectorActive = false;
+			this.flushDeferredPvPState();
+		} catch (e) {
+			this.pvpSelectorActive = false;
+			this.flushDeferredPvPState();
+			this.pendingPvPChoiceKey = null;
+			await this.showAlert(e.message ? e.message : "Unable to resolve leader discard choice.", "PvP");
+		}
+	}
+
+	async runPvPLeaderDeckToHandChoiceFlow(state){
+		let choice = state.gameState.pendingChoice;
+		if (!choice || choice.type !== "leader_deck_to_hand" || !choice.options || choice.options.length === 0)
+			return;
+		let choiceKey = state.matchId + ":" + state.turnNumber + ":" + choice.type + ":" + choice.options.map(option => option.instanceId).join(",");
+		if (this.pendingPvPChoiceKey === choiceKey)
+			return;
+		this.pendingPvPChoiceKey = choiceKey;
+		let container = this.createSortedPvPChoiceContainer(choice.options, player_me);
+		try {
+			this.pvpSelectorActive = true;
+			await ui.queueCarousel(
+				container,
+				1,
+				async (_deckContainer, _index, selectedCard) => {
+					let card = selectedCard;
+					let nextState = await this.multiplayerService.sendMatchAction({
+						playerId: this.playerProfile.id,
+						matchId: game.activeMatchId,
+						action: "resolve_choice",
+						selectedCardInstanceId: card && card.pvpInstanceId ? card.pvpInstanceId : ""
+					});
+					this.activeMatchState = nextState;
+					this.pendingPvPChoiceKey = null;
+					this.renderActiveMatchState(nextState);
+				},
+				() => true,
+				false,
+				false,
+				"Choose one card from your deck to draw."
+			);
+			this.pvpSelectorActive = false;
+			this.flushDeferredPvPState();
+		} catch (e) {
+			this.pvpSelectorActive = false;
+			this.flushDeferredPvPState();
+			this.pendingPvPChoiceKey = null;
+			await this.showAlert(e.message ? e.message : "Unable to resolve leader deck choice.", "PvP");
+		}
+	}
+
+	async runPvPLeaderGraveChoiceFlow(state){
+		let choice = state.gameState.pendingChoice;
+		if (!choice || choice.type !== "leader_grave_to_hand" || !choice.options || choice.options.length === 0)
+			return;
+		let choiceKey = state.matchId + ":" + state.turnNumber + ":" + choice.type + ":" + choice.options.map(option => option.instanceId).join(",");
+		if (this.pendingPvPChoiceKey === choiceKey)
+			return;
+		this.pendingPvPChoiceKey = choiceKey;
+		let owner = choice.sourcePlayerId === state.self.playerId ? player_me : player_op;
+		let prompt = choice.sourcePlayerId === state.self.playerId
+			? "Choose one unit from your graveyard to return to your hand."
+			: "Choose one unit from your opponent's graveyard to return to your hand.";
+		let container = this.createSortedPvPChoiceContainer(choice.options, owner);
+		try {
+			this.pvpSelectorActive = true;
+			await ui.queueCarousel(
+				container,
+				1,
+				async (_graveContainer, _index, selectedCard) => {
+					let card = selectedCard;
+					let nextState = await this.multiplayerService.sendMatchAction({
+						playerId: this.playerProfile.id,
+						matchId: game.activeMatchId,
+						action: "resolve_choice",
+						selectedCardInstanceId: card && card.pvpInstanceId ? card.pvpInstanceId : ""
+					});
+					this.activeMatchState = nextState;
+					this.pendingPvPChoiceKey = null;
+					this.renderActiveMatchState(nextState);
+				},
+				() => true,
+				false,
+				false,
+				prompt
+			);
+			this.pvpSelectorActive = false;
+			this.flushDeferredPvPState();
+		} catch (e) {
+			this.pvpSelectorActive = false;
+			this.flushDeferredPvPState();
+			this.pendingPvPChoiceKey = null;
+			await this.showAlert(e.message ? e.message : "Unable to resolve leader grave choice.", "PvP");
+		}
+	}
+
+	getLivePvPHandCard(card){
+		if (!card || !player_me || !player_me.hand || !card.pvpInstanceId)
+			return null;
+		return player_me.hand.cards.find(current => current && current.pvpInstanceId === card.pvpInstanceId) || null;
+	}
+
+	isPendingPvPCardState(state){
+		return !!(this.pendingPvPCardMove
+			&& state
+			&& state.self
+			&& state.self.hand
+			&& state.self.hand.some(entry => entry.instanceId === this.pendingPvPCardMove.cardInstanceId));
+	}
+
+	async playPvPCard(card, rowName){
+		if (!this.multiplayerService || !game.activeMatchId)
+			return;
+		if (!game.isSupportedPvPCard(card)) {
+			await this.showAlert("This PvP build does not support this card or its full effect yet.", "PvP");
+			return;
+		}
+		if (!card.pvpInstanceId)
+			return;
+		let liveCard = this.getLivePvPHandCard(card);
+		if (!liveCard)
+			return;
+		try {
+			this.pendingPvPCardMove = {
+				cardInstanceId: liveCard.pvpInstanceId,
+				targetRow: rowName ? rowName : liveCard.row
+			};
+			await this.animateLocalPvPCardPlay(liveCard, rowName);
+			let state = await this.multiplayerService.sendMatchAction({
+				playerId: this.playerProfile.id,
+				matchId: game.activeMatchId,
+				action: "play_card",
+				cardInstanceId: liveCard.pvpInstanceId ? liveCard.pvpInstanceId : undefined,
+				handIndex: !liveCard.pvpInstanceId ? player_me.hand.cards.indexOf(liveCard) : undefined,
+				targetRow: rowName ? rowName : liveCard.row
+			});
+			this.pendingPvPCardMove = null;
+			this.activeMatchState = state;
+			this.renderActiveMatchState(state);
+		} catch (e) {
+			this.pendingPvPCardMove = null;
+			if (this.isMissingMatchError(e)) {
+				this.endPvPSession();
+				return;
+			}
+			try {
+				let state = await this.multiplayerService.getMatchState({
+					playerId: this.playerProfile.id,
+					matchId: game.activeMatchId
+				});
+				this.activeMatchState = state;
+				this.renderActiveMatchState(state);
+			} catch (_ignored) {
+			}
+			await this.showAlert(e.message ? e.message : "Unable to play card in PvP.", "PvP");
+		}
+	}
+
+	async sendPvPAction(action){
+		if (!this.multiplayerService || !game.activeMatchId)
+			return;
+		try {
+			let state = await this.multiplayerService.sendMatchAction({
+				playerId: this.playerProfile.id,
+				matchId: game.activeMatchId,
+				action: action
+			});
+			this.activeMatchState = state;
+			if (action === "ready" && state.status === "active" && state.gameState && state.gameState.phase !== "choice") {
+				await this.startActivePvPMatch(state);
+			} else if (action === "ready" && state.status !== "active")
+				this.pvpCancelButton.innerHTML = "Leave Match";
+			if (action === "decline_ready") {
+				this.endPvPSession();
+				return;
+			}
+			this.renderActiveMatchState(state);
+			if (await this.handleCompletedPvPState(state))
+				return;
+		} catch (e) {
+			if (this.isMissingMatchError(e)) {
+				this.endPvPSession();
+				return;
+			}
+			if (action === "pass" && e && e.message && e.message.includes("It is not this player's turn")) {
+				try {
+					let state = await this.multiplayerService.getMatchState({
+						playerId: this.playerProfile.id,
+						matchId: game.activeMatchId
+					});
+					this.activeMatchState = state;
+					this.renderActiveMatchState(state);
+				} catch (_ignored) {
+				}
+				return;
+			}
+			await this.showAlert(e.message ? e.message : "Unable to send PvP action.", "PvP Session");
+		}
+	}
+
+	endPvPSession(){
+		this.clearQueuePolling();
+		this.clearMatchStatePolling();
+		this.queueActive = false;
+		this.activeMatchState = null;
+		this.redrawFlowActive = false;
+		this.pvpStartStateKey = null;
+		this.pvpCompletionHandledMatchId = null;
+		this.queueStartedAt = 0;
+		this.pendingPvPCardMove = null;
+		this.pendingPvPChoiceKey = null;
+		this.pvpRoundTransitionActive = false;
+		this.lastProcessedPvPEventSeq = 0;
+		this.pvpEventReplayActive = false;
+		game.activeMatchId = null;
+		game.activeMatchBootstrap = null;
+		this.clearActiveMatchId();
+		game.setMode("pvc");
+		this.pvpPassButton.classList.add("hide");
+		this.pvpCancelButton.innerHTML = "Cancel Queue";
+		this.queueElem.classList.add("hide");
+		this.queueStatusElem.innerHTML = "Not in queue";
+		game.returnToCustomization();
 	}
 	
 	// Converts the current deck to a JSON string
@@ -2689,6 +4264,8 @@ async function translateTo(card, container_source, container_dest){
 	let elem = card.elem;
 	let source = !container_source ? card.elem : getSourceElem(card, container_source, container_dest);
 	let dest = getDestinationElem(card, container_source, container_dest);
+	if (!source || !dest)
+		return;
 	if (!isInDocument(elem))
 		source.appendChild(elem);
 	let x = trueOffsetLeft(dest) - trueOffsetLeft(elem) +dest.offsetWidth/2 - elem.offsetWidth;
@@ -2729,7 +4306,7 @@ async function translateTo(card, container_source, container_dest){
 		if (source instanceof HandAI)
 			return source.hidden_elem;
 		if (source instanceof Deck)
-			return source.elem.children[source.elem.children.length-2];
+			return source.elem.children[source.elem.children.length-2] || source.elem;
 		return source.elem;
 	}
 
@@ -2744,9 +4321,9 @@ async function translateTo(card, container_source, container_dest){
 				return dest.elem;
 			let index = dest.getSortedIndex(card);
 			let dcard = dest.cards[index === dest.cards.length ? index-1 : index];
-			return dcard.elem;
+			return dcard && dcard.elem ? dcard.elem : dest.elem;
 		}
-		return dest.elem;
+		return dest && dest.elem ? dest.elem : null;
 	}
 }
 

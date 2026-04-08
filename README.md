@@ -1,10 +1,12 @@
 # gwent-classic
+
 ![cover](https://user-images.githubusercontent.com/26311830/116256903-f1599b00-a7b6-11eb-84a1-16dcb5c9bfc6.jpg)
 
-A browser remake of the original Gwent minigame from The Witcher 3: Wild Hunt including all cards from the DLC. Run it locally with Vite using the commands below. For the best experience, play in fullscreen which can be toggled in most browsers with F11.
+A browser remake of the original Gwent minigame from The Witcher 3: Wild Hunt, including DLC cards. The frontend keeps the original board flow and presentation, while PvP support is being added on top through a separate multiplayer backend.
 
 ## Run locally
-This project now runs with React, TypeScript, and Vite.
+
+This frontend runs with React, TypeScript, and Vite.
 
 ```bash
 npm install
@@ -13,24 +15,25 @@ npm run dev
 
 Open the local URL printed by Vite, usually `http://localhost:5173`.
 
-To create a production build:
+For a production build:
 
 ```bash
 npm run build
 npm run preview
 ```
 
-## Multiplayer service
-The current UI includes a PvP entry flow backed by a separate client-side service layer. The backend service lives in the separate repository `gwent-multiplayer-service`.
+## Multiplayer setup
 
-Set a multiplayer API base URL before starting Vite:
+PvP uses a separate backend repo: `gwent-multiplayer-service`.
+
+Point the frontend to that backend before starting Vite:
 
 ```bash
 export VITE_GWENT_MULTIPLAYER_URL=http://localhost:3001
 npm run dev
 ```
 
-Run the backend service in the separate repo:
+Run the backend in the other repo:
 
 ```bash
 cd /Users/dush/Gwent/gwent-multiplayer-service
@@ -38,49 +41,175 @@ npm install
 npm run dev
 ```
 
-The client will send PvP queue requests to:
+The frontend stores anonymous PvP identity in `localStorage`, so local testing does not require accounts.
 
-- `POST /queue/join`
-- `POST /queue/leave`
+## Project structure
 
-`/queue/join` currently expects JSON shaped like:
+- `src/app`
+  - React shell and HTML markup helpers
+  - multiplayer client service layer
+- `src/gwent.ts`
+  - main game runtime
+  - original board/game flow
+  - PvP bridge logic
+- `public/legacy/gwent.js`
+  - synced browser runtime copy of `src/gwent.ts`
+- `style.css`
+  - main game and UI styles
 
-```json
-{
-  "playerId": "anonymous-client-id",
-  "displayName": "Wolf-2731",
-  "deck": "{\"faction\":\"realms\",\"leader\":24,\"cards\":[[5,1]]}"
-}
-```
+## Frontend architecture
 
-If you want to host your own multiplayer backend, point `VITE_GWENT_MULTIPLAYER_URL` at your server and implement those endpoints first. The client-side identity is anonymous and stored in `localStorage`, so no account system is required for local testing.
+The frontend has two modes:
 
-For open-source hosting, a lightweight Node service is now scaffolded in `gwent-multiplayer-service`. Public matchmaking should come first. Private friend invites or join-by-session-code should be added after the queue flow is stable.
+- `PvC`
+  - original local single-player flow
+  - browser owns turn flow, AI behavior, board effects, and animations
+- `PvP`
+  - backend owns match state, legality, timers, and hidden information
+  - frontend renders the board and replays visible events
+
+The current frontend is a hybrid:
+
+- the original game runtime still powers the board UI and animations
+- PvP state comes from the backend as player-scoped match state
+- frontend maps that state into the existing board objects
+- visible actions are replayed through the existing PvC board primitives wherever possible
+
+## PvP flow
+
+Current PvP flow is:
+
+1. Player builds or reuses a deck from the existing deck screen.
+2. Player clicks `Play vs Player`.
+3. Frontend sends:
+   - anonymous `playerId`
+   - generated display name
+   - current deck snapshot
+4. Backend either queues the player or matches them.
+5. Once matched, both players confirm they are ready.
+6. Backend chooses the starting player, with faction overrides where applicable.
+7. Coin banner is shown.
+8. Both players complete redraw independently.
+9. Backend moves the match into active play.
+10. Frontend shows round-start and turn banners.
+11. During the match:
+    - backend validates actions
+    - backend updates authoritative state
+    - backend pushes state updates over WebSocket
+    - frontend applies state and replays visible events
+12. On round end:
+    - backend resolves winner, health loss, faction passives, and next-round state
+    - frontend runs round-end and next-round presentation
+13. On match end:
+    - winner is shown
+    - session returns to the home/deck flow
+
+## Design goals
+
+The PvP implementation is aiming for one product rule:
+
+- PvP should feel the same as PvC from the player point of view
+
+That means:
+
+- same redraw flow
+- same turn banners
+- same card movement expectations
+- same round-end expectations
+- same card rules
+- same leader and faction behavior
+
+The main difference is only controller source:
+
+- PvC: opponent actions come from AI
+- PvP: opponent actions come from a remote player, validated by the backend
+
+## How PvP is designed
+
+PvP is built around these design decisions:
+
+- backend is authoritative for legality and hidden information
+- frontend should not invent card results locally
+- frontend should reuse the original board animation and notification system as much as possible
+- player-scoped state is used so the client never receives the opponent hand or other hidden details
+- anonymous identity is used for v1, stored locally
+
+## Transport model
+
+PvP currently uses:
+
+- HTTP for actions and bootstrap requests
+- WebSocket for queue and match state push
+
+Snapshots are still part of the current frontend flow, but the long-term direction is event-driven replay for full parity with PvC presentation.
+
+## Current UI behavior
+
+The deck screen now contains:
+
+- `Play vs Computer`
+- `Play vs Player`
+
+PvP-only UI additions include:
+
+- queue status
+- ready confirmation
+- redraw timer
+- turn timer
+- forfeit button
+
+PvC behavior is intended to remain unchanged.
+
+## Current status
+
+What is already in place:
+
+- anonymous PvP identity
+- queueing and matchmaking
+- ready flow
+- redraw phase
+- turn timer from backend deadline
+- pass and forfeit
+- server-backed match state
+- WebSocket state push
+- many card, faction, and leader mechanics already ported into the backend
+
+What is still being refined:
+
+- redraw selector stability
+- full 1:1 presentation parity with PvC
+- some event replay and animation timing paths
+- remaining edge-case rule verification
+
+For the detailed parity audit, see [`PVP_PARITY_CHECKLIST.md`](/Users/dush/Gwent/gwent-classic/PVP_PARITY_CHECKLIST.md).
 
 ## Rules
-The game is played in the same way as the original. The player aims to win two of three rounds, where victory within a given round is determined by whoever scores the most points. 
 
-#### Cards and Points
-Points are obtained by placing down unit cards, each with their corresponding values. Some unit cards have special effects as denoted by a symbol on their left side. The cards and their effects can be examined by selecting them or the row they have been palced on. The game also includes a nubmer of special cards that apply effects like negative weather conditions or bosting card points when played.
+The game follows the original Gwent structure:
 
-#### Turns
-A turn consists of playing a single card. Your opponent then does the same until either one of you passes. At this point the remaining player can continue to place cards until they decide to pass. When both players have passed the round is ended. In addition of placing cards, they player may also activate their leader ability by clicking on their leader if it is available to them.
-
-#### Factions
-The faction you pick will affect your game in three ways. It limits the specific cards you can use to neutral cards, special cards, and the unit cards in your faction. This includes the leader card that you can pick and the corresponding leader ability. Each faction also has a special effect that is displayed when selecting a faction and at the top of the customization screen for the currently selected faction.
+- win two out of three rounds
+- highest total wins the round
+- each turn normally consists of playing one card or passing
+- leader abilities and faction effects depend on the selected deck
 
 ## Features
-#### All cards from the TW3 + DLC
-All cards from the base games and DLC can be used by you and the AI. This includes the additions from Hearts of Stone and Skellige as a playable deck from Blood and Wine. The total count of cards available corresponds to the number you can find in the original game.
 
-#### Faithful to the original minigame
-This remake aims to resemble the orignal minigame as closely as possible from the font to the UI layout and notifications. Some changes have been made in the form of buttons to toggle the music and pass your current turn. The deck customization screen also includes buttons to upload and download decks.
+### All cards from TW3 + DLC
 
-#### AI opponent
-When you start a game you will face off againsts a fully implemented AI oponent. The opponent uses premade decks and will make intelligent decisions based on the cards in its hand, on the table, and in the discard piles.
+The card pool includes the base game and DLC additions, including Skellige.
 
-#### Customize and save decks
-You can select a faction to play as at the top of the screen and then add and remove cards from your deck by clicking on the cards in either scroll-down menu. You can also pick a leader card by selecting the current leader and scrolling through the options for that faction. The current deck can be downloaded and reused for future multiplayer queueing. Deck upload is currently hidden while the multiplayer flow is being stabilized.
+### Faithful board presentation
 
-#### Music tracks
-The gwent music tracks are streamed from YouTube and can be toggled by pressing the music icon in the center of the customization screen or the bottom-left of the game screen. For some browsers, the page may need to be refreshed once before the music can be activated.
+The project aims to keep the original look, board layout, and general notification style.
+
+### AI opponent
+
+`Play vs Computer` keeps the original local AI-driven game mode.
+
+### Deck customization
+
+Decks can be customized from the existing deck screen and reused for PvP queueing.
+
+### Music
+
+Gwent music tracks are streamed from YouTube and can be toggled from the existing UI controls.
