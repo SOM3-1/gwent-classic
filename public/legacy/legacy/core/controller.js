@@ -1,0 +1,373 @@
+class Controller {
+}
+class ControllerAI {
+    constructor(player) {
+        this.player = player;
+    }
+    async startTurn(player) {
+        if (player.opponent().passed && (player.winning ||
+            player.deck.faction === "nilfgaard" && player.total === player.opponent().total)) {
+            await player.passRound();
+            return;
+        }
+        let data_max = this.getMaximums();
+        let data_board = this.getBoardData();
+        let weights = player.hand.cards.map(c => ({ weight: this.weightCard(c, data_max, data_board), action: async () => await this.playCard(c, data_max, data_board) }));
+        if (player.leaderAvailable)
+            weights.push({ weight: this.weightLeader(player.leader, data_max, data_board), action: async () => await player.activateLeader() });
+        weights.push({ weight: this.weightPass(), action: async () => await player.passRound() });
+        let weightTotal = weights.reduce((a, c) => a + c.weight, 0);
+        if (weightTotal === 0) {
+            for (let i = 0; i < player.hand.cards.length; ++i) {
+                let card = player.hand.cards[i];
+                if (card.row === "weather" && this.weightWeather(card) > -1 || card.abilities.includes("avenger")) {
+                    await weights[i].action();
+                    return;
+                }
+            }
+            await player.passRound();
+        }
+        else {
+            let rand = randomInt(weightTotal);
+            for (var i = 0; i < weights.length; ++i) {
+                rand -= weights[i].weight;
+                if (rand < 0)
+                    break;
+            }
+            await weights[i].action();
+        }
+    }
+    getMaximums() {
+        let rmax = board.row.map(r => ({ row: r, cards: r.cards.filter(c => c.isUnit()).reduce((a, c) => (!a.length || a[0].power < c.power) ? [c] : a[0].power === c.power ? a.concat([c]) : a, []) }));
+        let max = rmax.filter((r, i) => r.cards.length && i < 3).reduce((a, r) => Math.max(a, r.cards[0].power), 0);
+        let max_me = rmax.filter((r, i) => i < 3 && r.cards.length && r.cards[0].power === max).reduce((a, r) => a.concat(r.cards.map(c => ({ row: r, card: c }))), []);
+        max = rmax.filter((r, i) => r.cards.length && i > 2).reduce((a, r) => Math.max(a, r.cards[0].power), 0);
+        let max_op = rmax.filter((r, i) => i > 2 && r.cards.length && r.cards[0].power === max).reduce((a, r) => a.concat(r.cards.map(c => ({ row: r, card: c }))), []);
+        return { rmax: rmax, me: max_me, op: max_op };
+    }
+    getBoardData() {
+        let data = this.countCards(new CardContainer());
+        Object.keys([0, 1, 2]).map(i => board.row[i]).forEach(r => this.countCards(r, data));
+        data.grave_me = this.countCards(this.player.grave);
+        data.grave_op = this.countCards(this.player.opponent().grave);
+        return data;
+    }
+    countCards(container, data) {
+        data = data ? data : { spy: [], medic: [], bond: {}, scorch: [] };
+        container.cards.filter(c => c.isUnit()).forEach(c => {
+            for (let x of c.abilities) {
+                switch (x) {
+                    case "spy":
+                    case "medic":
+                        data[x].push(c);
+                        break;
+                    case "scorch_r":
+                    case "scorch_c":
+                    case "scorch_s":
+                        data["scorch"].push(c);
+                        break;
+                    case "bond":
+                        if (!data.bond[c.name])
+                            data.bond[c.name] = 0;
+                        data.bond[c.name]++;
+                }
+            }
+        });
+        return data;
+    }
+    redraw() {
+        let card = this.discardOrder({ holder: this.player }).shift();
+        if (card && card.power < 15) {
+            this.player.deck.swap(this.player.hand, this.player.hand.removeCard(card));
+        }
+    }
+    discardOrder(card) {
+        let cards = [];
+        let groups = {};
+        let musters = card.holder.hand.cards.filter(c => c.abilities.includes("muster"));
+        while (musters.length > 0) {
+            let curr = musters.pop();
+            let i = curr.name.indexOf('-');
+            let name = i === -1 ? curr.name : curr.name.substring(0, i).trim();
+            if (!groups[name])
+                groups[name] = [];
+            let group = groups[name];
+            group.push(curr);
+            for (let j = musters.length - 1; j >= 0; j--)
+                if (musters[j].name.startsWith(name))
+                    group.push(musters.splice(j, 1)[0]);
+        }
+        for (let group of Object.values(groups)) {
+            group.sort(Card.compare);
+            group.pop();
+            cards.push(...group);
+        }
+        let weathers = card.holder.hand.cards.filter(c => c.row === "weather");
+        if (weathers.length > 1) {
+            weathers.splice(randomInt(weathers.length), 1);
+            cards.push(...weathers);
+        }
+        let normal = card.holder.hand.cards.filter(c => c.abilities.length === 0);
+        normal.sort(Card.compare);
+        cards.push(...normal);
+        return cards;
+    }
+    async playCard(c, max, data) {
+        if (c.name === "Commander's Horn")
+            await this.horn(c);
+        else if (c.name === "Mardroeme")
+            await this.mardroeme(c);
+        else if (c.name === "Decoy")
+            await this.decoy(c, max, data);
+        else if (c.name === "Scorch")
+            await this.scorch(c, max, data);
+        else
+            await this.player.playCard(c);
+    }
+    async horn(card) {
+        let rows = [0, 1, 2].map(i => board.row[i]).filter(r => r.special === null);
+        let max_row;
+        let max = 0;
+        for (let i = 0; i < rows.length; ++i) {
+            let r = rows[i];
+            let dif = [0, 0];
+            this.calcRowPower(r, dif, true);
+            r.effects.horn++;
+            this.calcRowPower(r, dif, false);
+            r.effects.horn--;
+            let score = dif[1] - dif[0];
+            if (max < score) {
+                max = score;
+                max_row = r;
+            }
+        }
+        await this.player.playCardToRow(card, max_row);
+    }
+    async mardroeme(card) {
+        let row, max = 0;
+        for (let i = 1; i < 3; i++) {
+            let curr = this.weightMardroemeRow(card, board.row[i]);
+            if (curr > max) {
+                max = curr;
+                row = board.row[i];
+            }
+        }
+        await this.player.playCardToRow(card, row);
+    }
+    medic(card, grave) {
+        let data = this.countCards(grave);
+        let targ;
+        if (data.spy.length) {
+            let min = data.spy.reduce((a, c) => Math.min(a, c.power), Number.MAX_VALUE);
+            targ = data.spy.filter(c => c.power === min)[0];
+        }
+        else if (data.medic.length) {
+            let max = data.medic.reduce((a, c) => Math.max(a, c.power), Number.MIN_VALUE);
+            targ = data.medic.filter(c => c.power === max)[0];
+        }
+        else if (data.scorch.length) {
+            targ = data.scorch[randomInt(data.scorch.length)];
+        }
+        else {
+            let units = grave.findCards(c => c.isUnit());
+            targ = units.reduce((a, c) => a.power < c.power ? c : a, units[0]);
+        }
+        return targ;
+    }
+    async decoy(card, max, data) {
+        let targ, row;
+        if (data.spy.length) {
+            let min = data.spy.reduce((a, c) => Math.min(a, c.power), Number.MAX_VALUE);
+            targ = data.spy.filter(c => c.power === min)[0];
+        }
+        else if (data.medic.length) {
+            targ = data.medic[randomInt(data.medic.length)];
+        }
+        else if (data.scorch.length) {
+            targ = data.scorch[randomInt(data.scorch.length)];
+        }
+        else {
+            let pairs = max.rmax.filter((r, i) => i < 3 && r.cards.length).reduce((a, r) => r.cards.map(c => ({ r: r.row, c: c })).concat(a), []);
+            let pair = pairs[randomInt(pairs.length)];
+            targ = pair.c;
+            row = pair.r;
+        }
+        for (let i = 0; !row; ++i) {
+            if (board.row[i].cards.indexOf(targ) !== -1) {
+                row = board.row[i];
+                break;
+            }
+        }
+        setTimeout(() => board.toHand(targ, row), 1000);
+        await this.player.playCardToRow(card, row);
+    }
+    async scorch(card, max, data) {
+        await this.player.playScorch(card);
+    }
+    weightPass() {
+        if (this.player.health === 1)
+            return 0;
+        let dif = this.player.opponent().total - this.player.total;
+        if (dif > 30)
+            return 100;
+        if (dif < -30 && this.player.opponent().handsize - this.player.handsize > 2)
+            return 100;
+        return Math.floor(Math.abs(dif));
+    }
+    weightLeader(card, max, data) {
+        let w = ability_dict[card.abilities[0]].weight;
+        if (ability_dict[card.abilities[0]].weight) {
+            let score = w(card, this, max, data);
+            return score;
+        }
+        return 10 + (game.roundCount - 1) * 15;
+    }
+    weightScorchRow(card, max, row_name) {
+        let index = 3 + (row_name === "close" ? 0 : row_name === "ranged" ? 1 : 2);
+        if (board.row[index].total < 10)
+            return 0;
+        let score = max.rmax[index].cards.reduce((a, c) => a + c.power, 0);
+        return score;
+    }
+    weightHornRow(card, row) {
+        return row.special !== null ? 0 : this.weightRowChange(card, row);
+    }
+    weightRowChange(card, row) {
+        return Math.max(0, this.weightRowChangeTrue(card, row));
+    }
+    weightRowChangeTrue(card, row) {
+        let dif = [0, 0];
+        this.calcRowPower(row, dif, true);
+        row.updateState(card, true);
+        this.calcRowPower(row, dif, false);
+        if (!card.isSpecial())
+            dif[0] -= row.calcCardScore(card);
+        row.updateState(card, false);
+        return dif[1] - dif[0];
+    }
+    weightWeather(card) {
+        let rows;
+        if (card.name === "Clear Weather")
+            rows = Object.values(weather.types).filter(t => t.count > 0).flatMap(t => t.rows);
+        else
+            rows = Object.values(weather.types).filter(t => t.count === 0 && t.name === card.abilities[0]).flatMap(t => t.rows);
+        if (!rows.length)
+            return 1;
+        let dif = [0, 0];
+        rows.forEach(r => {
+            let state = r.effects.weather;
+            this.calcRowPower(r, dif, true);
+            r.effects.weather = !state;
+            this.calcRowPower(r, dif, false);
+            r.effects.weather = state;
+        });
+        return dif[1] - dif[0];
+    }
+    weightMardroemeRow(card, row) {
+        if (card.name === "Mardroeme" && row.special !== null)
+            return 0;
+        let ermion = card.holder.hand.cards.filter(c => c.name === "Ermion").length > 0;
+        if (ermion && card.name !== "Ermion" && row === board.row[1])
+            return 0;
+        let name = row === board.row[1] ? "Young Berserker" : "Berserker";
+        let n = row.cards.filter(c => c.name === name).length;
+        let weight = row === board.row[2] ? 10 * n : 8 * n * n - 2 * n;
+        return Math.max(1, weight);
+    }
+    weightMedic(data, score, owner) {
+        let units = owner.grave.findCards(c => c.isUnit());
+        let grave = data["grave_" + owner.opponent().tag];
+        return !units.length ? Math.min(1, score) : score + (grave.spy.length ? 50 : grave.medic.length ? 15 : grave.scorch.length ? 10 : this.player.health === 1 ? 1 : 0);
+    }
+    weightBerserker(card, row, score) {
+        if (card.holder.hand.cards.filter(c => c.abilities.includes("mardroeme")).length < 1 && !row.effects.mardroeme > 0)
+            return score;
+        score -= card.basePower;
+        if (card.row === "close")
+            score += 14;
+        else {
+            let n = 0;
+            if (!row.effects.mardroeme)
+                n = row.cards.filter(c => c.name === "Young Berserker").length;
+            else
+                n = row.cards.filter(c => "Transformed Young Vildkaarl").length;
+            score = 8 * ((n + 1) * (n + 1) - n * n) + n * score;
+        }
+        return Math.max(1, score);
+    }
+    weightWeatherFromDeck(card, weather_id) {
+        if (card.holder.deck.findCard(c => c.abilities.includes(weather_id)) === undefined)
+            return 0;
+        return this.weightCard({ abilities: [weather_id], row: "weather" });
+    }
+    weightCard(card, max, data) {
+        if (card.name === "Decoy")
+            return data.spy.length ? 50 : data.medic.length ? 15 : data.scorch.length ? 10 : max.me.length ? 1 : 0;
+        if (card.name === "Commander's Horn") {
+            let rows = [0, 1, 2].map(i => board.row[i]).filter(r => r.special === null);
+            if (!rows.length)
+                return 0;
+            rows = rows.map(r => this.weightHornRow(card, r));
+            return Math.max(...rows) / 2;
+        }
+        if (card.abilities) {
+            if (card.abilities.includes("scorch")) {
+                let power_op = max.op.length ? max.op[0].card.power : 0;
+                let power_me = max.me.length ? max.me[0].card.power : 0;
+                let total_op = power_op * max.op.length;
+                let total_me = power_me * max.me.length;
+                return power_me > power_op ? 0 : power_me < power_op ? total_op : Math.max(0, total_op - total_me);
+            }
+            if (card.abilities.includes("decoy")) {
+                return data.spy.length ? 50 : data.medic.length ? 15 : data.scorch.length ? 10 : max.me.length ? 1 : 0;
+            }
+            if (card.abilities.includes("mardroeme")) {
+                let rows = [1, 2].map(i => board.row[i]);
+                return Math.max(...rows.map(r => this.weightMardroemeRow(card, r)));
+            }
+        }
+        if (card.row === "weather") {
+            return Math.max(0, this.weightWeather(card));
+        }
+        let row = board.getRow(card, card.row === "agile" ? "close" : card.row, this.player);
+        let score = row.calcCardScore(card);
+        switch (card.abilities[card.abilities.length - 1]) {
+            case "bond":
+            case "morale":
+            case "horn":
+                score = this.weightRowChange(card, row);
+                break;
+            case "medic":
+                score = this.weightMedic(data, score, card.holder);
+                break;
+            case "spy":
+                score = 15 + score;
+                break;
+            case "muster":
+                score *= 3;
+                break;
+            case "scorch_c":
+                score = Math.max(1, this.weightScorchRow(card, max, "close"));
+                break;
+            case "scorch_r":
+                score = Math.max(1, this.weightScorchRow(card, max, "ranged"));
+                break;
+            case "scorch_s":
+                score = Math.max(1, this.weightScorchRow(card, max, "siege"));
+                break;
+            case "berserker":
+                score = this.weightBerserker(card, row, score);
+                break;
+            case "avenger":
+            case "avenger_kambi":
+                return score + ability_dict[card.abilities[card.abilities.length - 1]].weight();
+        }
+        return score;
+    }
+    calcRowPower(r, dif, add) {
+        r.findCards(c => c.isUnit()).forEach(c => {
+            let p = r.calcCardScore(c);
+            c.holder === this.player ? (dif[0] += add ? p : -p) : (dif[1] += add ? p : -p);
+        });
+    }
+}

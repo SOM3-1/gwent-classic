@@ -1,0 +1,35 @@
+flowchart LR
+    subgraph Browser["Browser"]
+        UI["React UI shell"]
+        Runtime["Legacy game runtime"]
+        Storage["localStorage"]
+        Board["Board DOM and animations"]
+    end
+
+    subgraph Client["gwent-classic"]
+        Multiplayer["multiplayer.ts"]
+        PvP["PvP bridge in gwent.ts"]
+    end
+
+    subgraph Service["gwent-multiplayer-service"]
+        Api["HTTP API"]
+        Ws["WebSocket"]
+    end
+
+    UI --> PvP
+    PvP --> Runtime
+    PvP --> Board
+    PvP --> Storage
+    PvP --> Multiplayer
+    Multiplayer --> Api
+    Multiplayer --> Ws
+
+    classDef shell fill:#f7f2e8,stroke:#5d4632,stroke-width:2,color:#1f1a17;
+    classDef runtime fill:#e7efe8,stroke:#355c3a,stroke-width:2,color:#142016;
+    classDef infra fill:#e8eef7,stroke:#365a86,stroke-width:2,color:#162233;
+    classDef browser fill:#f4ead8,stroke:#8a6a3f,stroke-width:2,color:#2e2418;
+
+    class UI,PvP,Multiplayer shell;
+    class Runtime runtime;
+    class Api,Ws infra;
+    class Storage,Board browser;

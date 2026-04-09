@@ -680,6 +680,8 @@ class CardContainer {
 	
 	// Adds a card to the container along with its associated HTML element.
 	addCard(card, index){
+		if (!card || !card.elem)
+			return;
 		this.cards.push(card);
 		this.addCardElement(card, index?index:0);
 		this.resize();
@@ -690,6 +692,10 @@ class CardContainer {
 		if (this.cards.length === 0)
 			throw "Cannot draw from empty " + this.constructor.name;
 		card = this.cards.splice( isNumber(card)? card : this.cards.indexOf(card) , 1)[0];
+		if (!card || !card.elem) {
+			this.resize();
+			return card;
+		}
 		this.removeCardElement(card, index?index:0);
 		this.resize();
 		return card;
@@ -724,15 +730,19 @@ class CardContainer {
 	
 	// Removes the HTML elemenet associated with the card from this CardContainer
 	removeCardElement(card, index){
+		if (!card || !card.elem)
+			return;
 		if (this.elem)
 			this.elem.removeChild(card.elem);
 	}
 	
 	// Adds the HTML elemenet associated with the card to this CardContainer
 	addCardElement(card, index){
+		if (!card || !card.elem)
+			return;
 		if (this.elem){
 			if (index === this.cards.length)
-				thise.elem.appendChild(card.elem);
+				this.elem.appendChild(card.elem);
 			else
 				this.elem.insertBefore(card.elem, this.elem.children[index]);
 		}
@@ -783,6 +793,25 @@ class Grave extends CardContainer {
 	constructor(elem) {
 		super(elem)
 		elem.addEventListener("click", () => ui.viewCardsInContainer(this), false);
+	}
+
+	// Override
+	addCardElement(card, index){
+		if (card && card.elem) {
+			super.addCardElement(card, index);
+			return;
+		}
+		let elem = document.createElement("div");
+		elem.classList.add("deck-card");
+		if (this.elem)
+			this.elem.appendChild(elem);
+		let placeholder = { elem: elem };
+		this.cards.push(placeholder);
+		this.setCardOffset(placeholder, this.cards.length - 1);
+	}
+
+	addPlaceholder(){
+		this.addCardElement(null, 0);
 	}
 	
 	// Override
@@ -1268,575 +1297,6 @@ class Board {
 		player_me.setWinning(dif > 0);
 		player_op.setWinning(dif < 0);
 	}
-}
-
-class Game {
-	constructor() {
-		this.turnDurationSeconds = 45;
-		this.turnTimer = null;
-		this.turnTimerDeadline = 0;
-		this.turnTimerElem = document.getElementById("turn-timer");
-		this.turnTimerTextElem = this.turnTimerElem ? this.turnTimerElem.getElementsByTagName("span")[0] : null;
-		this.forfeitButtonElem = document.getElementById("forfeit-button");
-		this.endScreen = document.getElementById("end-screen");
-		let buttons = this.endScreen.getElementsByTagName("button");
-		this.customize_elem = buttons[0];
-		this.replay_elem = buttons[1];
-		this.customize_elem.addEventListener("click", () => this.returnToCustomization(), false);
-		this.replay_elem.addEventListener("click", () => this.restartGame(), false);
-		this.reset();
-	}
-	
-	reset() {
-		this.setMode("pvc");
-		this.activeMatchId = null;
-		this.activeMatchBootstrap = null;
-		this.lastPvPTimerKey = null;
-		this.lastPvPTurnNoticeKey = null;
-		this.lastPvPActionNoticeKey = null;
-		this.lastPvPCoinMatchId = null;
-		this.lastPvPStartMatchId = null;
-		this.lastPvPRoundNoticeKey = null;
-		this.lastPvPRoundStartKey = null;
-		this.pvpBoardEntered = false;
-		this.deferPvPTimer = false;
-		this.clearTurnTimer();
-		this.renderTurnTimer(this.turnDurationSeconds);
-		this.firstPlayer;
-		this.currPlayer = null;
-		
-		this.gameStart = [];
-		this.roundStart = [];
-		this.roundEnd = [];
-		this.turnStart = [];
-		this.turnEnd = [];
-		
-		this.roundCount = 0;
-		this.roundHistory = [];
-		
-		this.randomRespawn = false;
-		this.doubleSpyPower = false;
-		
-		weather.reset();
-		board.row.forEach(r => r.reset());
-	}
-	
-	// Sets up player faction abilities and psasive leader abilities
-	initPlayers(p1, p2){
-		let l1 = ability_dict[p1.leader.abilities[0]];
-		let l2 = ability_dict[p2.leader.abilities[0]];
-		if (l1 === ability_dict["emhyr_whiteflame"] || l2 === ability_dict["emhyr_whiteflame"]){
-			p1.disableLeader();
-			p2.disableLeader();
-		} else {
-			initLeader(p1, l1);
-			initLeader(p2, l2);
-		}
-		if (p1.deck.faction === p2.deck.faction && p1.deck.faction === "scoiatael")
-			return;
-		initFaction(p1);
-		initFaction(p2);
-		
-		function initLeader(player, leader){
-			if (leader.placed)
-				leader.placed(player.leader);
-			Object.keys(leader).filter(key => game[key]).map(key => game[key].push(leader[key]));
-		}
-		
-		function initFaction(player){
-			if (factions[player.deck.faction] && factions[player.deck.faction].factionAbility)
-				factions[player.deck.faction].factionAbility(player);
-		}
-	}
-	
-	// Sets initializes player abilities, player hands and redraw
-	async startGame() {
-		ui.toggleMusic_elem.classList.remove("music-customization");
-		this.initPlayers(player_me, player_op);
-		await Promise.all([...Array(10).keys()].map( async () => {
-			await player_me.deck.draw(player_me.hand);
-			await player_op.deck.draw(player_op.hand);
-		}));
-		
-		await this.runEffects(this.gameStart);
-		if (!this.firstPlayer)
-			this.firstPlayer = await this.coinToss();
-		this.initialRedraw();
-	}
-	
-	// Simulated coin toss to determine who starts game
-	async coinToss(){
-		this.firstPlayer = (Math.random() < 0.5) ? player_me : player_op;
-		await ui.notification(this.firstPlayer.tag + "-coin", 1200);
-		return this.firstPlayer;
-	}
-	
-	// Allows the player to swap out up to two cards from their iniitial hand
-	async initialRedraw(){
-		for (let i=0; i< 2; i++)
-			player_op.controller.redraw();
-		await ui.queueCarousel(player_me.hand, 2, async (c, i) => await player_me.deck.swap(c, c.removeCard(i)), c => true, true, true, "Choose up to 2 cards to redraw.");
-		ui.enablePlayer(false);
-		game.startRound();
-	}
-	
-	// Initiates a new round of the game
-	async startRound(){
-		this.roundCount++;
-		this.currPlayer = (this.roundCount%2 === 0) ? this.firstPlayer : this.firstPlayer.opponent();
-		await this.runEffects(this.roundStart);
-		
-		if ( !player_me.canPlay() )
-			player_me.setPassed(true);
-		if ( !player_op.canPlay() )
-			player_op.setPassed(true);
-		
-		if (player_op.passed && player_me.passed)
-			return this.endRound();
-		
-		if (this.currPlayer.passed)
-			this.currPlayer = this.currPlayer.opponent();
-		
-		await ui.notification("round-start", 1200);
-		if (this.currPlayer.opponent().passed)
-			await ui.notification(this.currPlayer.tag + "-turn", 1200);
-		
-		this.startTurn();
-	}
-	
-	// Starts a new turn. Enables client interraction in client's turn.
-	async startTurn() {
-		await this.runEffects(this.turnStart);
-		if (!this.currPlayer.opponent().passed){
-			this.currPlayer = this.currPlayer.opponent();
-			await ui.notification(this.currPlayer.tag + "-turn", 1200);
-		}
-		if (this.mode === "pvp")
-			this.startTurnTimer();
-		else
-			this.renderTurnTimer(this.turnDurationSeconds);
-		ui.enablePlayer(this.currPlayer === player_me);
-		this.currPlayer.startTurn();
-	}
-	
-	// Ends the current turn and may end round. Disables client interraction in client's turn.
-	async endTurn() {
-		this.clearTurnTimer();
-		if (this.currPlayer === player_me)
-			ui.enablePlayer(false);
-		await this.runEffects(this.turnEnd);
-		if (this.currPlayer.passed)
-			await ui.notification(this.currPlayer.tag + "-pass", 1200);
-		if (player_op.passed && player_me.passed)
-			this.endRound();
-		else
-			this.startTurn();
-	}
-	
-	// Ends the round and may end the game. Determines final scores and the round winner.
-	async endRound() {
-		this.clearTurnTimer();
-		let dif = player_me.total - player_op.total;
-		if (dif === 0) {
-			let nilf_me = player_me.deck.faction === "nilfgaard", nilf_op = player_op.deck.faction === "nilfgaard";
-			dif = nilf_me ^ nilf_op ? nilf_me ? 1 : -1 : 0;
-		}
-		let winner = dif > 0 ? player_me : dif < 0 ? player_op : null;
-		let verdict = {winner: winner, score_me: player_me.total, score_op: player_op.total}
-		this.roundHistory.push(verdict);
-		
-		await this.runEffects(this.roundEnd);
-		
-		board.row.forEach( row => row.clear() );
-		weather.clearWeather();
-		
-		player_me.endRound( dif > 0);
-		player_op.endRound( dif < 0);
-		
-		if (dif > 0)
-			await ui.notification("win-round", 1200);
-		else if (dif < 0)
-			await ui.notification("lose-round", 1200);
-		else
-			await ui.notification("draw-round", 1200);
-		
-		if (player_me.health === 0 || player_op.health === 0)
-			this.endGame();
-		else
-			this.startRound();
-	}
-	
-	// Sets up and displays the end-game screen
-	async endGame() {
-		let endScreen = document.getElementById("end-screen");
-		let rows = endScreen.getElementsByTagName("tr");
-		rows[1].children[0].innerHTML = player_me.name;
-		rows[2].children[0].innerHTML = player_op.name;
-		
-		for (let i=1; i<4; ++i) {
-			let round = this.roundHistory[i-1];
-			rows[1].children[i].innerHTML = round ? round.score_me : 0;
-			rows[1].children[i].style.color = round && round.winner === player_me ? "goldenrod" : "";
-			
-			rows[2].children[i].innerHTML = round ? round.score_op : 0;
-			rows[2].children[i].style.color = round && round.winner === player_op ? "goldenrod" : "";
-		}
-		
-		endScreen.children[0].className = "";
-		if (player_op.health <= 0 && player_me.health <= 0) {
-			endScreen.getElementsByTagName("p")[0].classList.remove("hide");
-			endScreen.children[0].classList.add("end-draw");
-		} else if (player_op.health === 0){
-			endScreen.children[0].classList.add("end-win");
-		} else {
-			endScreen.children[0].classList.add("end-lose");
-		}
-		
-		fadeIn(endScreen, 300);
-		ui.enablePlayer(true);
-	}
-	
-	// Returns the client to the deck customization screen
-	returnToCustomization(){
-		this.reset();
-		if (player_me)
-			player_me.reset();
-		if (player_op)
-			player_op.reset();
-		ui.toggleMusic_elem.classList.add("music-customization");
-		this.endScreen.classList.add("hide");
-		document.getElementById("deck-customization").classList.remove("hide");
-	}
-	
-	// Restarts the last game with the dame decks
-	restartGame(){
-		this.reset();
-		if (player_me)
-			player_me.reset();
-		if (player_op)
-			player_op.reset();
-		this.endScreen.classList.add("hide");
-		this.startGame();
-	}
-	
-	// Executes effects in list. If effect returns true, effect is removed.
-	async runEffects(effects){
-		for (let i=effects.length-1; i>=0; --i){
-			let effect = effects[i];
-			if (await effect())
-				effects.splice(i,1)
-		}
-	}
-
-	startTurnTimer(deadlineAt) {
-		this.clearTurnTimer();
-		this.turnTimerDeadline = deadlineAt ? new Date(deadlineAt).getTime() : Date.now() + this.turnDurationSeconds * 1000;
-		if (!Number.isFinite(this.turnTimerDeadline))
-			this.turnTimerDeadline = Date.now() + this.turnDurationSeconds * 1000;
-		this.renderTurnTimer(Math.max(0, Math.ceil((this.turnTimerDeadline - Date.now()) / 1000)), "Turn");
-		this.turnTimer = setInterval(() => {
-			let remaining = Math.max(0, Math.ceil((this.turnTimerDeadline - Date.now()) / 1000));
-			this.renderTurnTimer(remaining, "Turn");
-			if (remaining <= 0) {
-				this.clearTurnTimer();
-				if (
-					this.mode === "pvp"
-					&& this.activeMatchId
-					&& dm
-					&& this.activeMatchBootstrap
-					&& this.activeMatchBootstrap.status === "active"
-					&& this.activeMatchBootstrap.currentTurnPlayerId === this.activeMatchBootstrap.self.playerId
-					&& !this.activeMatchBootstrap.self.passed
-				)
-					dm.sendPvPAction("pass");
-			}
-		}, 250);
-	}
-
-	clearTurnTimer() {
-		if (this.turnTimer) {
-			clearInterval(this.turnTimer);
-			this.turnTimer = null;
-		}
-	}
-
-	renderTurnTimer(seconds, label) {
-		if (!this.turnTimerElem || !this.turnTimerTextElem)
-			return;
-		this.turnTimerElem.classList.toggle("hide", this.mode !== "pvp");
-		if (this.forfeitButtonElem)
-			this.forfeitButtonElem.classList.toggle("hide", this.mode !== "pvp");
-		this.turnTimerTextElem.innerHTML = (label ? label + " " : "") + seconds + "s";
-		this.turnTimerElem.classList.toggle("timer-warning", seconds <= 15 && seconds > 5);
-		this.turnTimerElem.classList.toggle("timer-danger", seconds <= 5);
-	}
-
-	setMode(mode) {
-		this.mode = mode;
-		this.renderTurnTimer(this.turnDurationSeconds, "Turn");
-	}
-
-	handlePassAction() {
-		if (!player_me)
-			return;
-		if (this.mode === "pvp") {
-			if (dm && this.activeMatchId)
-				dm.sendPvPAction("pass");
-			return;
-		}
-		player_me.passRound();
-	}
-
-	createDeckFromSnapshot(deckJson) {
-		let deck = typeof deckJson === "string" ? JSON.parse(deckJson) : deckJson;
-		return {
-			faction: deck.faction,
-			leader: card_dict[deck.leader],
-			cards: deck.cards ? deck.cards.map(c => ({index: c[0], count: c[1]})) : []
-		};
-	}
-
-	resetPileCount(deck, count){
-		deck.reset();
-		deck.cards = [];
-		for (let i=0; i<count; ++i) {
-			deck.cards.push(null);
-			deck.addCardElement();
-		}
-		deck.resize();
-	}
-
-	populateHand(hand, holder, ids){
-		hand.reset();
-		ids.forEach(entry => {
-			let card = new Card(card_dict[entry.cardId], holder);
-			card.pvpInstanceId = entry.instanceId;
-			hand.addCard(card);
-		});
-	}
-
-	syncPvPPlayerState(player, state, isSelf){
-		if (!player || !state)
-			return;
-		player.halfWeather = !!state.halfWeather;
-		player.setPassed(state.passed);
-		if (state.leaderAvailable)
-			player.enableLeader();
-		else
-			player.disableLeader();
-		document.getElementById("gem1-" + player.tag).classList.toggle("gem-on", state.health >= 1);
-		document.getElementById("gem2-" + player.tag).classList.toggle("gem-on", state.health >= 2);
-		if (isSelf) {
-			this.populateHand(player.hand, player, state.hand);
-			this.resetPileCount(player.deck, state.deckCount);
-		} else {
-			player.hand.cards = new Array(state.handCount).fill(null);
-			player.hand.resize();
-			this.resetPileCount(player.deck, state.deckCount);
-		}
-	}
-
-	resetPvPBoardRows(){
-		weather.reset();
-		board.row.forEach(row => row.reset());
-		player_me.total = 0;
-		player_op.total = 0;
-		document.getElementById("score-total-me").children[0].innerHTML = "0";
-		document.getElementById("score-total-op").children[0].innerHTML = "0";
-	}
-
-	renderPvPRowState(row, ids, holder){
-		ids.forEach(id => {
-			let card = new Card(card_dict[id], holder);
-			CardContainer.prototype.addCard.call(row, card, row.cards.length);
-			card.elem.classList.add("noclick");
-		});
-		row.resize();
-	}
-
-	renderPvPSpecialState(row, id, holder){
-		if (id === null || id === undefined)
-			return;
-		let card = new Card(card_dict[id], holder);
-		row.special = card;
-		row.elem_special.appendChild(card.elem);
-		row.updateState(card, true);
-		card.elem.classList.add("noclick");
-		row.updateScore();
-	}
-
-	renderPvPWeatherState(ids){
-		ids.forEach(id => {
-			let card = new Card(card_dict[id], player_me);
-			CardContainer.prototype.addCard.call(weather, card, weather.cards.length);
-			card.elem.classList.add("noclick");
-			weather.changeWeather(card, x => ++weather.types[x].count === 1, (r,t) => r.addOverlay(t.name));
-		});
-		weather.resize();
-	}
-
-	renderPvPBoardState(state){
-		this.resetPvPBoardRows();
-		this.renderPvPRowState(board.row[2], state.opponent.rows.close, player_op);
-		this.renderPvPRowState(board.row[1], state.opponent.rows.ranged, player_op);
-		this.renderPvPRowState(board.row[0], state.opponent.rows.siege, player_op);
-		this.renderPvPSpecialState(board.row[2], state.opponent.specialRows.close, player_op);
-		this.renderPvPSpecialState(board.row[1], state.opponent.specialRows.ranged, player_op);
-		this.renderPvPSpecialState(board.row[0], state.opponent.specialRows.siege, player_op);
-		this.renderPvPRowState(board.row[3], state.self.rows.close, player_me);
-		this.renderPvPRowState(board.row[4], state.self.rows.ranged, player_me);
-		this.renderPvPRowState(board.row[5], state.self.rows.siege, player_me);
-		this.renderPvPSpecialState(board.row[3], state.self.specialRows.close, player_me);
-		this.renderPvPSpecialState(board.row[4], state.self.specialRows.ranged, player_me);
-		this.renderPvPSpecialState(board.row[5], state.self.specialRows.siege, player_me);
-		this.renderPvPWeatherState(state.gameState.weather);
-		player_me.total = state.self.total;
-		player_op.total = state.opponent.total;
-		document.getElementById("score-total-me").children[0].innerHTML = state.self.total;
-		document.getElementById("score-total-op").children[0].innerHTML = state.opponent.total;
-		board.updateLeader();
-	}
-
-	enterPvPMatch(state){
-		if (!state || !state.self || !state.opponent)
-			return;
-		let meDeck = this.createDeckFromSnapshot(state.self.deck);
-		let opDeck = this.createDeckFromSnapshot(state.opponent.deck);
-		this.reset();
-		document.querySelector("#leader-me .leader-container").innerHTML = "";
-		document.querySelector("#leader-op .leader-container").innerHTML = "";
-		player_me = new Player(0, state.self.displayName, meDeck);
-		player_op = new Player(1, state.opponent.displayName, opDeck);
-		player_me.setController(new Controller());
-		player_op.setController(new Controller());
-		player_me.disableLeader();
-		player_op.disableLeader();
-		document.getElementById("deck-customization").classList.add("hide");
-		ui.toggleMusic_elem.classList.remove("music-customization");
-		this.setMode("pvp");
-		this.activeMatchId = state.matchId;
-		this.activeMatchBootstrap = state;
-		this.pvpBoardEntered = true;
-		ui.enablePlayer(true);
-		this.applyPvPState(state);
-	}
-
-	async announcePvPCoin(state){
-		if (this.lastPvPCoinMatchId === state.matchId)
-			return;
-		this.lastPvPCoinMatchId = state.matchId;
-		await ui.notification(state.currentTurnPlayerId === state.self.playerId ? "me-coin" : "op-coin", 1200);
-	}
-
-	async announcePvPStart(state){
-		let startKey = state.matchId + ":" + state.round + ":" + state.turnNumber + ":" + state.currentTurnPlayerId;
-		if (this.lastPvPStartMatchId === startKey)
-			return;
-		this.lastPvPStartMatchId = startKey;
-		this.lastPvPTurnNoticeKey = startKey + ":" + state.status;
-		await ui.notification("round-start", 1200);
-		await ui.notification(state.currentTurnPlayerId === state.self.playerId ? "me-turn" : "op-turn", 1200);
-	}
-
-	applyPvPState(state){
-		if (this.mode !== "pvp" || !player_me || !player_op)
-			return;
-		ui.enablePlayer(true);
-		this.activeMatchId = state.matchId;
-		this.activeMatchBootstrap = state;
-		this.syncPvPPlayerState(player_me, state.self, true);
-		this.syncPvPPlayerState(player_op, state.opponent, false);
-		this.renderPvPBoardState(state);
-		let hasPendingChoice = !!(state.gameState && state.gameState.pendingChoice);
-		document.getElementById("stats-me").classList.remove("current-turn");
-		document.getElementById("stats-op").classList.remove("current-turn");
-		let isMyTurn = state.status === "active" && state.currentTurnPlayerId === state.self.playerId && !state.self.passed && !hasPendingChoice;
-		let activeStats = isMyTurn ? document.getElementById("stats-me") : state.status === "active" ? document.getElementById("stats-op") : null;
-		if (activeStats)
-			activeStats.classList.add("current-turn");
-		document.getElementById("pass-button").classList.toggle("noclick", !isMyTurn);
-		player_me.hand.cards.forEach(card => card.elem.classList.remove("noclick"));
-		let lastAction = state.actionLog && state.actionLog.length > 0 ? state.actionLog[state.actionLog.length - 1] : null;
-		let passNoticeKey = lastAction && lastAction.type === "pass" ? lastAction.playerId + ":" + lastAction.at : null;
-		if (passNoticeKey && this.lastPvPActionNoticeKey !== passNoticeKey) {
-			this.lastPvPActionNoticeKey = passNoticeKey;
-			ui.notification(lastAction.playerId === state.self.playerId ? "me-pass" : "op-pass", 1200);
-		}
-		let timerKey = state.matchId + ":" + state.round + ":" + state.turnNumber + ":" + state.currentTurnPlayerId;
-		let turnNoticeKey = timerKey + ":" + state.status;
-		if (state.status === "active" && state.gameState.phase === "active" && !this.deferPvPTimer) {
-			this.turnTimerElem.classList.toggle("timer-op", !isMyTurn);
-			this.turnTimerElem.classList.remove("timer-redraw");
-			if (this.lastPvPTimerKey !== timerKey) {
-				this.lastPvPTimerKey = timerKey;
-				this.startTurnTimer(state.turnDeadlineAt);
-			}
-			if (this.lastPvPTurnNoticeKey !== turnNoticeKey && this.lastPvPStartMatchId && this.lastPvPStartMatchId.startsWith(state.matchId + ":")) {
-				this.lastPvPTurnNoticeKey = turnNoticeKey;
-				ui.notification(isMyTurn ? "me-turn" : "op-turn", 1200);
-			}
-		} else {
-			this.clearTurnTimer();
-			this.turnTimerElem.classList.remove("timer-op");
-			this.turnTimerElem.classList.toggle("timer-redraw", state.status === "active" && state.gameState.phase === "redraw");
-			if (state.status === "active" && state.gameState.phase === "redraw" && state.gameState.redrawDeadlineAt) {
-				let redrawDeadline = new Date(state.gameState.redrawDeadlineAt).getTime();
-				let remaining = Number.isFinite(redrawDeadline) ? Math.max(0, Math.ceil((redrawDeadline - Date.now()) / 1000)) : this.turnDurationSeconds;
-				this.renderTurnTimer(remaining, "Redraw");
-			} else
-				this.renderTurnTimer(this.turnDurationSeconds, "Turn");
-		}
-	}
-
-	isSupportedPvPCard(card){
-		return this.mode === "pvp"
-			&& this.activeMatchBootstrap
-			&& this.activeMatchBootstrap.status === "active"
-			&& this.activeMatchBootstrap.gameState.phase === "active"
-			&& this.activeMatchBootstrap.currentTurnPlayerId === this.activeMatchBootstrap.self.playerId
-			&& card
-			&& card.holder === player_me
-			&& player_me.hand.cards.includes(card)
-			&& (
-				(["close", "ranged", "siege"].includes(card.row) && card.abilities.every(ability => ["hero", "bond", "morale", "horn", "mardroeme", "berserker"].includes(ability)))
-				|| (["close", "ranged", "siege"].includes(card.row) && card.abilities.some(ability => ["scorch_c", "scorch_r", "scorch_s"].includes(ability)))
-				|| card.name === "Decoy"
-				|| card.name === "Scorch"
-				|| (["close", "ranged", "siege"].includes(card.row) && card.abilities.includes("spy"))
-				|| (["close", "ranged", "siege"].includes(card.row) && card.abilities.includes("medic"))
-				|| (["close", "ranged", "siege"].includes(card.row) && card.abilities.includes("muster"))
-				|| (["close", "ranged", "siege"].includes(card.row) && card.abilities.some(ability => ["avenger", "avenger_kambi"].includes(ability)))
-				|| (card.row === "agile" && (card.abilities.length === 0 || card.abilities.every(ability => ["hero", "morale"].includes(ability))))
-				|| card.name === "Commander's Horn"
-				|| card.name === "Mardroeme"
-				|| (card.faction === "weather" && card.abilities.every(ability => ["clear", "frost", "fog", "rain", "storm"].includes(ability)))
-			);
-	}
-
-	getPvPRowName(row){
-		if (row === weather)
-			return "weather";
-		if (row === board.row[3] || row === board.row[2])
-			return "close";
-		if (row === board.row[4] || row === board.row[1])
-			return "ranged";
-		if (row === board.row[5] || row === board.row[0])
-			return "siege";
-		return "";
-	}
-
-	async forfeitMatch() {
-		if (this.mode !== "pvp")
-			return;
-		await new Promise(resolve => {
-			ui.popup("Forfeit", async () => {
-				if (dm && this.activeMatchId)
-					await dm.sendPvPAction("forfeit");
-				resolve(true);
-			}, "Cancel", () => resolve(false), "Forfeit Match", "If you forfeit this PvP match, the other player wins immediately.");
-		});
-	}
-	
 }
 
 // Contians information and behavior of a Card
@@ -2377,6 +1837,7 @@ class Carousel {
 		this.indices = [];
 		this.index = 0;
 		this.currentInstanceId = null;
+		this.busy = false;
 		this.bExit = bExit;
 		this.title = title;
 		this.cancelled = false;
@@ -2433,17 +1894,24 @@ class Carousel {
 	// Called by client to perform action on the middle card in focus
 	async select(event) {
 		(event || window.event).stopPropagation();
-		let selectedIndex = this.indices[this.index];
-		let selectedCard = this.container.cards[selectedIndex];
+		if (this.busy)
+			return;
+		let selectedIndex = -1;
+		let selectedCard = null;
+		if (this.currentInstanceId) {
+			selectedIndex = this.container.cards.findIndex(card => card && card.pvpInstanceId === this.currentInstanceId);
+			if (selectedIndex >= 0)
+				selectedCard = this.container.cards[selectedIndex];
+		}
+		if (!selectedCard) {
+			this.indices = this.container.cards.reduce((a,c,i)=> (!this.predicate || this.predicate(c)) ? a.concat([i]) : a, []);
+			if (this.bSort)
+				this.indices.sort( (a, b) => Card.compare(this.container.cards[a],this.container.cards[b]) );
+			selectedIndex = this.indices[this.index];
+			selectedCard = this.container.cards[selectedIndex];
+		}
 		if (!selectedCard)
 			return;
-		if (selectedCard.pvpInstanceId) {
-			let liveIndex = this.container.cards.findIndex(card => card && card.pvpInstanceId === selectedCard.pvpInstanceId);
-			if (liveIndex >= 0) {
-				selectedIndex = liveIndex;
-				selectedCard = this.container.cards[selectedIndex];
-			}
-		}
 		if (!selectedCard)
 			return;
 		this.currentInstanceId = selectedCard.pvpInstanceId ? selectedCard.pvpInstanceId : null;
@@ -2452,7 +1920,15 @@ class Carousel {
 			this.elem.classList.add("hide");
 		if (this.count <= 0)
 			ui.enablePlayer(false);
+		this.busy = true;
+		this.elem.classList.add("noclick");
 		await this.action(this.container, selectedIndex, selectedCard);
+		this.elem.classList.remove("noclick");
+		this.busy = false;
+		let nextSelectedCard = this.container.cards[selectedIndex]
+			|| this.container.cards[Math.max(0, selectedIndex - 1)]
+			|| null;
+		this.currentInstanceId = nextSelectedCard && nextSelectedCard.pvpInstanceId ? nextSelectedCard.pvpInstanceId : null;
 		if (this.isLastSelection() && !this.cancelled)
 			return this.exit();
 		this.update();
@@ -2585,7 +2061,7 @@ class Popup {
 }
 
 // Screen used to customize, import and export deck contents
-class DeckMaker {
+class DeckMakerLegacy {
 	constructor() {
 		this.elem = document.getElementById("deck-customization");
 		this.bank_elem = document.getElementById("card-bank");
@@ -3156,15 +2632,32 @@ class DeckMaker {
 						let selectedCardInstanceId = selectedCard && selectedCard.pvpInstanceId ? selectedCard.pvpInstanceId : "";
 						if (!selectedCardInstanceId)
 							return;
+						let pickedEntry = latestState && latestState.self && latestState.self.hand
+							? latestState.self.hand.find(entry => entry.instanceId === selectedCardInstanceId)
+							: null;
+						console.log("[pvp-redraw] pick", {
+							instanceId: selectedCardInstanceId,
+							cardId: pickedEntry ? pickedEntry.cardId : null
+						});
+						let previousState = latestState;
 						latestState = await this.multiplayerService.sendMatchAction({
 							playerId: this.playerProfile.id,
 							matchId: game.activeMatchId,
 							action: "redraw_card",
 							cardInstanceId: selectedCardInstanceId
 						});
+						if (latestState && latestState.eventLog && latestState.eventLog.length > 0) {
+							let last = latestState.eventLog[latestState.eventLog.length - 1];
+							if (last && last.type === "redraw_card") {
+								console.log("[pvp-redraw] result", {
+									returnedCardId: last.returnedCardId,
+									drawnCardId: last.drawnCardId
+								});
+							}
+						}
 						this.pvpDeferredState = null;
 						this.activeMatchState = latestState;
-						game.applyPvPState(latestState);
+						game.applyPvPRedrawResult(previousState, latestState, selectedCardInstanceId);
 					},
 					() => true,
 					true,
@@ -3322,6 +2815,17 @@ class DeckMaker {
 			await ui.notification("round-start", 1200);
 			await ui.notification(state.currentTurnPlayerId === state.self.playerId ? "me-turn" : "op-turn", 1200);
 			game.deferPvPTimer = false;
+		} else if (state.status === "active" && state.gameState && state.gameState.phase === "active") {
+			let fallbackRoundKey = state.matchId + ":round:" + state.round + ":turn:" + state.turnNumber;
+			if (this.lastPvPRoundStartKey !== fallbackRoundKey) {
+				this.lastPvPRoundStartKey = fallbackRoundKey;
+				game.deferPvPTimer = true;
+				game.lastPvPTurnNoticeKey = null;
+				game.applyPvPState(state);
+				await ui.notification("round-start", 1200);
+				await ui.notification(state.currentTurnPlayerId === state.self.playerId ? "me-turn" : "op-turn", 1200);
+				game.deferPvPTimer = false;
+			}
 		}
 		this.pvpRoundTransitionActive = false;
 		if (state.eventLog && state.eventLog.length > 0)
@@ -3601,12 +3105,12 @@ class DeckMaker {
 				this.pvpEventReplayActive = false;
 				let latestState = this.activeMatchState || state;
 				if (game.mode === "pvp")
-					game.applyPvPState(latestState);
+					this.renderActiveMatchState(latestState);
 			}).catch(() => {
 				this.pvpEventReplayActive = false;
 				let latestState = this.activeMatchState || state;
 				if (game.mode === "pvp")
-					game.applyPvPState(latestState);
+					this.renderActiveMatchState(latestState);
 			});
 			return;
 		}
@@ -4253,191 +3757,3 @@ class DeckMaker {
 		this.update();
 	}
 }
-
-// Translates a card between two containers
-async function translateTo(card, container_source, container_dest){
-	if (!container_dest || !container_source)
-		return;
-	if (container_dest === player_op.hand && container_source === player_op.deck)
-		return;
-	
-	let elem = card.elem;
-	let source = !container_source ? card.elem : getSourceElem(card, container_source, container_dest);
-	let dest = getDestinationElem(card, container_source, container_dest);
-	if (!source || !dest)
-		return;
-	if (!isInDocument(elem))
-		source.appendChild(elem);
-	let x = trueOffsetLeft(dest) - trueOffsetLeft(elem) +dest.offsetWidth/2 - elem.offsetWidth;
-	let y = trueOffsetTop(dest) - trueOffsetTop(elem) +dest.offsetHeight/2 - elem.offsetHeight/2;
-	if (container_dest instanceof Row && container_dest.cards.length !== 0 && !card.isSpecial() ){
-		x += (container_dest.getSortedIndex(card) === container_dest.cards.length) ? elem.offsetWidth/2 : -elem.offsetWidth/2;
-	}
-	if (card.holder.controller instanceof ControllerAI)
-		x += elem.offsetWidth/2;
-	if (container_source instanceof Row && container_dest instanceof Grave && !card.isSpecial()) {
-		let mid = trueOffset(container_source.elem, true) + container_source.elem.offsetWidth/2;
-		x += trueOffset(elem, true) - mid;
-	}
-	if (container_source instanceof Row && container_dest === player_me.hand)
-		y *= 7/8;
-	await translate(elem, x, y);
-	
-	// Returns true if the element is visible in the viewport
-	function isInDocument(elem){
-		return elem.getBoundingClientRect().width !== 0;
-	}
-	
-	// Returns the true offset of a nested element in the viewport
-	function trueOffset(elem, left){
-		let total =0
-		let curr = elem;
-		while (curr){
-			total += (left ? curr.offsetLeft : curr.offsetTop);
-			curr = curr.parentElement;
-		}
-		return total;
-	}
-	function trueOffsetLeft(elem) {	return trueOffset(elem, true); }
-	function trueOffsetTop(elem) { return trueOffset(elem, false); }
-	
-	// Returns the source container's element to transition from
-	function getSourceElem(card, source, dest){
-		if (source instanceof HandAI)
-			return source.hidden_elem;
-		if (source instanceof Deck)
-			return source.elem.children[source.elem.children.length-2] || source.elem;
-		return source.elem;
-	}
-
-	// Returns the destination container's element to transition to
-	function getDestinationElem(card, source, dest){
-		if (dest instanceof HandAI)
-			return dest.hidden_elem;
-		if (card.isSpecial() && dest instanceof Row)
-			return dest.elem_special;
-		if (dest instanceof Row || dest instanceof Hand || dest instanceof Weather){
-			if (dest.cards.length === 0)
-				return dest.elem;
-			let index = dest.getSortedIndex(card);
-			let dcard = dest.cards[index === dest.cards.length ? index-1 : index];
-			return dcard && dcard.elem ? dcard.elem : dest.elem;
-		}
-		return dest && dest.elem ? dest.elem : null;
-	}
-}
-
-// Translates an element by x from the left and y from the top
-async function translate(elem, x, y){
-	let vw100 = 100 / document.getElementById("dimensions").offsetWidth;
-	x*=vw100;
-	y*=vw100 ;
-	elem.style.transform = "translate(" + x + "vw, " + y + "vw)";
-	let margin = elem.style.marginLeft;
-	elem.style.marginRight = -elem.offsetWidth*vw100 + "vw";
-	elem.style.marginLeft = "";
-	await sleep(499);
-	elem.style.transform = "";
-	elem.style.position = "";
-	elem.style.marginLeft = margin;
-	elem.style.marginRight = margin;
-}
-
-// Fades out an element until hidden over the duration
-async function fadeOut(elem, duration, delay) {
-	await fade(false, elem, duration, delay);
-}
-
-// Fades in an element until opaque over the duration
-async function fadeIn(elem, duration, delay){
-	await fade(true, elem, duration, delay);
-}
-
-// Fades an element over a duration 
-async function fade(fadeIn, elem, dur, delay){
-	if (delay)
-		await sleep(delay)
-	let op = fadeIn ?  0.1 : 1;
-	elem.style.opacity = op;
-	elem.style.filter = "alpha(opacity=" + (op * 100) + ")";
-	if (fadeIn)
-		elem.classList.remove("hide");
-	let timer = setInterval( async function() {
-		op += op * (fadeIn ? 0.1 : -0.1);
-		if (op >= 1) {
-			clearInterval(timer);
-			return;
-		} else if (op <= 0.1) {
-			elem.classList.add("hide");
-			elem.style.opacity = "";
-			elem.style.filter = "";
-			clearInterval(timer);
-			return;
-		}
-		elem.style.opacity = op;
-		elem.style.filter = "alpha(opacity=" + (op * 100) + ")";
-	}, dur/24);
-}
-
-//      Get Image paths   
-function iconURL(name, ext = "png"){
-	return imgURL("icons/" + name, ext);
-}
-function largeURL(name, ext="jpg"){
-	return imgURL("lg/" + name, ext) 
-}
-function smallURL(name, ext="jpg"){
-	return imgURL("sm/" + name, ext);
-}
-function imgURL(path, ext) {
-	return "url('img/" + path + "." + ext;
-}
-
-// Returns true if n is an Number
-function isNumber(n) { 
-	return !isNaN(parseFloat(n)) && isFinite(n);
-}
-
-// Returns true if s is a String
-function isString(s){
-	return typeof(s) === 'string' || s instanceof String;
-}
-
-// Returns a random integer in the range [0,n)
-function randomInt(n)  {
-	return Math.floor(Math.random() * n);
-}
-
-// Pauses execution until the passed number of milliseconds as expired
-function sleep(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
-  //return new Promise(resolve => setTimeout(() => {if (func) func(); return resolve();}, ms));
-}
-
-// Suspends execution until the predicate condition is met, checking every ms milliseconds
-function sleepUntil(predicate, ms) {
-	return new Promise(resolve => {
-		let timer = setInterval( function () {
-			if (predicate()) {
-				clearInterval(timer);
-				resolve();
-			}
-		}, ms)
-	});
-}
-
-// Initializes the interractive YouTube object
-function onYouTubeIframeAPIReady() {
-	ui.initYouTube();
-}
-
-/*----------------------------------------------------*/
-
-var ui = new UI();
-var board = new Board();
-var weather = new Weather();
-var game = new Game();
-var player_me, player_op;
-
-ui.enablePlayer(false);
-let dm = new DeckMaker();

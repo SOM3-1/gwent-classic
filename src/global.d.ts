@@ -52,9 +52,9 @@ interface Window {
             deckCount: number;
             graveCount: number;
             rows: {
-              close: number[];
-              ranged: number[];
-              siege: number[];
+              close: PvPCardInstance[];
+              ranged: PvPCardInstance[];
+              siege: PvPCardInstance[];
             };
             specialRows: {
               close: number | null;
@@ -82,9 +82,9 @@ interface Window {
             deckCount: number;
             graveCount: number;
             rows: {
-              close: number[];
-              ranged: number[];
-              siege: number[];
+              close: PvPCardInstance[];
+              ranged: PvPCardInstance[];
+              siege: PvPCardInstance[];
             };
             specialRows: {
               close: number | null;
@@ -192,9 +192,9 @@ interface Window {
           deckCount: number;
           graveCount: number;
           rows: {
-            close: number[];
-            ranged: number[];
-            siege: number[];
+            close: PvPCardInstance[];
+            ranged: PvPCardInstance[];
+            siege: PvPCardInstance[];
           };
           specialRows: {
             close: number | null;
@@ -223,9 +223,9 @@ interface Window {
           deckCount: number;
           graveCount: number;
           rows: {
-            close: number[];
-            ranged: number[];
-            siege: number[];
+            close: PvPCardInstance[];
+            ranged: PvPCardInstance[];
+            siege: PvPCardInstance[];
           };
           specialRows: {
             close: number | null;
@@ -312,9 +312,9 @@ interface Window {
           deckCount: number;
           graveCount: number;
           rows: {
-            close: number[];
-            ranged: number[];
-            siege: number[];
+            close: PvPCardInstance[];
+            ranged: PvPCardInstance[];
+            siege: PvPCardInstance[];
           };
           specialRows: {
             close: number | null;
@@ -341,9 +341,9 @@ interface Window {
           deckCount: number;
           graveCount: number;
           rows: {
-            close: number[];
-            ranged: number[];
-            siege: number[];
+            close: PvPCardInstance[];
+            ranged: PvPCardInstance[];
+            siege: PvPCardInstance[];
           };
           specialRows: {
             close: number | null;

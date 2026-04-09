@@ -245,4 +245,4 @@ export function createMultiplayerService() {
       });
     }
   };
-}
+};

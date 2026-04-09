@@ -10,5 +10,5 @@
     "noEmitOnError": false,
     "removeComments": true
   },
-  "include": ["src/abilities.ts", "src/cards.ts", "src/decks.ts", "src/factions.ts", "src/gwent.ts", "src/global.d.ts"]
+  "include": ["src/abilities.ts", "src/cards.ts", "src/decks.ts", "src/factions.ts", "src/legacy/core/controller.ts", "src/legacy/core/card_container.ts", "src/legacy/core/board.ts", "src/legacy/core/card.ts", "src/legacy/core/player.ts", "src/legacy/ui/ui.ts", "src/legacy/ui/carousel.ts", "src/legacy/ui/popup.ts", "src/legacy/pvp/game.ts", "src/legacy/pvp/deckmaker.ts", "src/gwent_runtime.ts", "src/global.d.ts"]
 }

@@ -6,7 +6,17 @@ const scriptSources = [
   "/legacy/decks.js",
   "/legacy/abilities.js",
   "/legacy/factions.js",
-  "/legacy/gwent.js",
+  "/legacy/legacy/core/controller.js",
+  "/legacy/legacy/core/card_container.js",
+  "/legacy/legacy/core/board.js",
+  "/legacy/legacy/core/card.js",
+  "/legacy/legacy/core/player.js",
+  "/legacy/legacy/ui/ui.js",
+  "/legacy/legacy/ui/carousel.js",
+  "/legacy/legacy/ui/popup.js",
+  "/legacy/legacy/pvp/game.js",
+  "/legacy/legacy/pvp/deckmaker.js",
+  "/legacy/gwent_runtime.js",
   "https://www.youtube.com/iframe_api"
 ];
 

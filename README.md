@@ -4,11 +4,14 @@
 
 A browser remake of the original Gwent minigame from The Witcher 3: Wild Hunt, including DLC cards. The frontend keeps the original board flow and presentation, while PvP support is being added on top through a separate multiplayer backend.
 
+For local frontend architecture documentation, see [docs/frontend-architecture.md](./docs/frontend-architecture.md).
+
 ## Run locally
 
 This frontend runs with React, TypeScript, and Vite.
 
 ```bash
+cd gwent-classic
 npm install
 npm run dev
 ```
@@ -26,22 +29,31 @@ npm run preview
 
 PvP uses a separate backend repo: `gwent-multiplayer-service`.
 
-Point the frontend to that backend before starting Vite:
+Start the backend in a separate terminal:
 
 ```bash
-export VITE_GWENT_MULTIPLAYER_URL=http://localhost:3001
-npm run dev
-```
-
-Run the backend in the other repo:
-
-```bash
-cd /Users/dush/Gwent/gwent-multiplayer-service
+cd gwent-multiplayer-service
 npm install
 npm run dev
 ```
 
+Then point the frontend to that backend before starting Vite:
+
+```bash
+cd gwent-classic
+export VITE_GWENT_MULTIPLAYER_URL=http://localhost:3001
+npm run dev
+```
+
 The frontend stores anonymous PvP identity in `localStorage`, so local testing does not require accounts.
+
+## Getting oriented
+
+Recommended reading order:
+
+1. [`src/app/services/multiplayer.ts`](/Users/dush/Gwent/gwent-classic/src/app/services/multiplayer.ts)
+2. [`src/gwent.ts`](/Users/dush/Gwent/gwent-classic/src/gwent.ts)
+3. [Frontend architecture doc](./docs/frontend-architecture.md)
 
 ## Project structure
 
@@ -104,6 +116,24 @@ Current PvP flow is:
     - winner is shown
     - session returns to the home/deck flow
 
+## Snapshot model
+
+The frontend currently uses a hybrid PvP model:
+
+- backend snapshots are the source of truth
+- backend event logs provide ordered visible actions
+- frontend replays supported events and reconciles the rest from the latest snapshot
+
+In practice this means:
+
+1. the frontend fetches an initial player-scoped match snapshot
+2. the frontend subscribes to `match_state` updates over WebSocket
+3. each new snapshot includes an event log with increasing sequence numbers
+4. the frontend replays new supported events
+5. the frontend uses the snapshot to recover any state that was not fully covered by event replay
+
+This is why PvP can already recover from reconnects and refreshes even though presentation parity work is still ongoing.
+
 ## Design goals
 
 The PvP implementation is aiming for one product rule:
@@ -141,7 +171,7 @@ PvP currently uses:
 - HTTP for actions and bootstrap requests
 - WebSocket for queue and match state push
 
-Snapshots are still part of the current frontend flow, but the long-term direction is event-driven replay for full parity with PvC presentation.
+Snapshots are still part of the current frontend flow. The long-term direction is event-driven replay for full parity with PvC presentation, with snapshots mainly used for bootstrap and recovery.
 
 ## Current UI behavior
 
@@ -180,8 +210,6 @@ What is still being refined:
 - full 1:1 presentation parity with PvC
 - some event replay and animation timing paths
 - remaining edge-case rule verification
-
-For the detailed parity audit, see [`PVP_PARITY_CHECKLIST.md`](/Users/dush/Gwent/gwent-classic/PVP_PARITY_CHECKLIST.md).
 
 ## Rules
 
